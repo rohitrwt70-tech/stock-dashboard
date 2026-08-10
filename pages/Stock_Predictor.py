@@ -6549,6 +6549,7 @@ with main_tab1:
                     _ai_raw = _ai_raw_gemini
 
             # ── Display errors ────────────────────────────────────────────────────
+            _ai_summary = None  # ensure always defined
             if not _claude_key and not _groq_key and not _gemini_key:
                 st.warning("No AI keys configured. Add `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` to `.env`.")
                 _ai_handled = True
@@ -6708,7 +6709,7 @@ with main_tab1:
 
             # Get AI verdict from the analysis that ran above
             _stock_verdict = ""
-            if "_ai_summary" in dir() and _ai_summary:
+            if _ai_summary:
                 _stock_verdict = _ai_summary.get("verdict","").lower()
             elif _ai_text:
                 import re as _rvre
