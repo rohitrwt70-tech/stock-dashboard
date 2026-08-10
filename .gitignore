@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+screener_models/
+requirements_full.txt
+chrome_extension/
+sync_log.json
+ws_live.json
+ws_control.json
+price_history.json
+screener_predictions.json

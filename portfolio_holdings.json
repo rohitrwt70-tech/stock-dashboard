@@ -1,0 +1,50 @@
+[
+  {
+    "avg_price": 226.07,
+    "currency": "$",
+    "name": "NVIDIA Corporation",
+    "qty": 2.6463,
+    "source": "indmoney",
+    "symbol": "NVDA"
+  },
+  {
+    "avg_price": 611.46,
+    "currency": "$",
+    "name": "Meta Platforms, Inc.",
+    "qty": 0.8202,
+    "source": "indmoney",
+    "symbol": "META"
+  },
+  {
+    "avg_price": 424.63,
+    "currency": "$",
+    "name": "Microsoft Corporation",
+    "qty": 0.9393,
+    "source": "indmoney",
+    "symbol": "MSFT"
+  },
+  {
+    "avg_price": 102.94,
+    "currency": "$",
+    "name": "ServiceNow, Inc.",
+    "qty": 6.7799,
+    "source": "indmoney",
+    "symbol": "NOW"
+  },
+  {
+    "avg_price": 407.7,
+    "currency": "$",
+    "name": "Taiwan Semiconductor Manufacturing",
+    "qty": 0.7337,
+    "source": "indmoney",
+    "symbol": "TSM"
+  },
+  {
+    "avg_price": 1578.09,
+    "currency": "$",
+    "name": "MercadoLibre, Inc.",
+    "qty": 0.1895,
+    "source": "indmoney",
+    "symbol": "MELI"
+  }
+]
