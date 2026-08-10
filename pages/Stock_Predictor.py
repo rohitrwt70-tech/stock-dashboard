@@ -132,7 +132,8 @@ def search_stocks(query: str):
 
 with st.sidebar:
     _india_fallback = ["RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS","SBIN.NS","BHARTIARTL.NS","ITC.NS","LT.NS","KOTAKBANK.NS","AXISBANK.NS","WIPRO.NS","HCLTECH.NS","SUNPHARMA.NS","MARUTI.NS","TITAN.NS","BAJFINANCE.NS","NTPC.NS","POWERGRID.NS","TATAMOTORS.NS","TATASTEEL.NS","ADANIPORTS.NS","ONGC.NS","COALINDIA.NS","DRREDDY.NS","CIPLA.NS","ZOMATO.NS","IRCTC.NS","HAL.NS","BEL.NS","TATAPOWER.NS","POLYCAB.NS","HAVELLS.NS","PERSISTENT.NS","COFORGE.NS","MPHASIS.NS","LTIM.NS"]
-    _sidebar_tickers = get_us_universe() if "🇺🇸" in market_label else _india_fallback
+    _us_fallback = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","JPM","V","MA","UNH","XOM","LLY","AVGO","JNJ","PG","HD","MRK","ABBV","COST","CVX","CRM","BAC","AMD","PEP","NFLX","KO","WMT","CSCO","MCD","ORCL","CAT","TXN","ADBE","QCOM","GS","AMGN","MS","INTU","BKNG","SNDK","PLTR","COIN","SOFI","HOOD","RIVN","SNOW","DDOG","NET","CRWD","PANW","NOW","WDAY","SHOP","RKLB","IONQ","ARM","APP","SMCI","DELL","SERV","UBER","LYFT","ABNB","DASH","RDDT","PINS","SNAP"]
+    _sidebar_tickers = _us_fallback if "🇺🇸" in market_label else _india_fallback
     raw = st.selectbox(
         "Search Stock",
         options=[""] + _sidebar_tickers,
