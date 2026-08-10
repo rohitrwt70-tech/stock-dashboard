@@ -131,7 +131,8 @@ def search_stocks(query: str):
 
 
 with st.sidebar:
-    _sidebar_tickers = get_us_universe() if "🇺🇸" in market_label else INDIA_UNIVERSE
+    _india_fallback = ["RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS","SBIN.NS","BHARTIARTL.NS","ITC.NS","LT.NS","KOTAKBANK.NS","AXISBANK.NS","WIPRO.NS","HCLTECH.NS","SUNPHARMA.NS","MARUTI.NS","TITAN.NS","BAJFINANCE.NS","NTPC.NS","POWERGRID.NS","TATAMOTORS.NS","TATASTEEL.NS","ADANIPORTS.NS","ONGC.NS","COALINDIA.NS","DRREDDY.NS","CIPLA.NS","ZOMATO.NS","IRCTC.NS","HAL.NS","BEL.NS","TATAPOWER.NS","POLYCAB.NS","HAVELLS.NS","PERSISTENT.NS","COFORGE.NS","MPHASIS.NS","LTIM.NS"]
+    _sidebar_tickers = get_us_universe() if "🇺🇸" in market_label else _india_fallback
     raw = st.selectbox(
         "Search Stock",
         options=[""] + _sidebar_tickers,
