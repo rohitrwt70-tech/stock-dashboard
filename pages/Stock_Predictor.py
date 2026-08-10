@@ -14,7 +14,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 from dotenv import load_dotenv
-from streamlit_searchbox import st_searchbox
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy import stats
@@ -132,13 +131,14 @@ def search_stocks(query: str):
 
 
 with st.sidebar:
-    raw = st_searchbox(
-        search_stocks,
+    _sidebar_tickers = get_us_universe() if "🇺🇸" in market_label else INDIA_UNIVERSE
+    raw = st.selectbox(
+        "Search Stock",
+        options=[""] + _sidebar_tickers,
+        index=0,
         placeholder=market["placeholder"],
-        label="Search Stock",
         key=f"pred_search_{market_label}",
-        clear_on_submit=False,
-        debounce=250,
+        label_visibility="visible",
     )
 
     st.markdown("---")
