@@ -95,6 +95,125 @@ MARKETS = {
     },
 }
 
+EMERGING_INDUSTRIES = {
+    "⚛️ Quantum Computing": {
+        "why": "Will break current encryption and solve optimization problems impossible for classical computers. Most investors don't understand it — they avoid it.",
+        "catalyst": "First fault-tolerant quantum computer. Enterprise contracts from banks/pharma.",
+        "tam": "$850B+ TAM by 2040. Currently <$2B in revenue globally.",
+        "boring_factor": "Too technical to understand. Seems like 'sci-fi'. Years from mainstream.",
+        "seeds_us": ["IONQ", "RGTI", "QUBT", "ARQQ", "QMCO", "QTUM"],
+        "seeds_in": [],
+        "horizon": "1–3 years",
+    },
+    "🔋 Small Modular Reactors (SMR)": {
+        "why": "AI data centers need 10–100× more power. SMRs are the only clean, always-on baseload solution. Nuclear = old and scary to most investors.",
+        "catalyst": "First commercial SMR power purchase agreement. NRC approval.",
+        "tam": "$300B TAM by 2040. Microsoft/Google already signed SMR deals.",
+        "boring_factor": "Nuclear is 50-year-old technology. Most ESG funds avoid it. Media treats it negatively.",
+        "seeds_us": ["SMR", "OKLO", "BWXT", "LEU", "NNE", "UUUU", "UEC"],
+        "seeds_in": ["RVNL.NS", "LTTS.NS"],
+        "horizon": "2–5 years",
+    },
+    "🛸 Satellite-to-Mobile (Direct-to-Device)": {
+        "why": "Every phone on earth gets satellite coverage without a special device. Eliminates dead zones. Massive for insurance, IoT, emergency services.",
+        "catalyst": "Commercial launch + carrier agreements. FCC approval.",
+        "tam": "$100B+ TAM. Carriers pay per subscriber connected.",
+        "boring_factor": "Satellite companies have failed before (Iridium, etc.). History makes investors cautious.",
+        "seeds_us": ["ASTS", "IRDM", "GSAT", "SPOK"],
+        "seeds_in": [],
+        "horizon": "1–2 years",
+    },
+    "🧬 Longevity / Anti-Aging Biotech": {
+        "why": "Drugs that extend healthy lifespan by targeting aging itself. GLP-1 showed biology can be hacked. Rapamycin, senolytics, NAD+ are next.",
+        "catalyst": "Clinical trial data on aging biomarkers. FDA accepting 'aging' as treatable disease.",
+        "tam": "$600B+ TAM. Every human is the customer.",
+        "boring_factor": "Seen as science fiction. No clear FDA pathway yet. Long timelines.",
+        "seeds_us": ["LLYP", "ARWR", "UNITY", "ADTX", "SRRK", "BIO"],
+        "seeds_in": [],
+        "horizon": "2–5 years",
+    },
+    "🛡️ Defence Tech (Autonomous + AI-Driven)": {
+        "why": "Ukraine/Israel/Taiwan conflicts driving massive re-arming. AI-driven drones, cyber defence, and electronic warfare replacing legacy hardware.",
+        "catalyst": "Government contracts. NATO/QUAD defence spending increases.",
+        "tam": "$2T global defence spending. AI defence is <1% of that.",
+        "boring_factor": "Defence is 'old economy'. Ethical concerns. Contracts take years.",
+        "seeds_us": ["KTOS", "AVAV", "RCAT", "JOBY", "ACHR", "PLTR"],
+        "seeds_in": ["PARAS.NS", "MTAR.NS", "DRALAL.NS", "BEL.NS", "HAL.NS"],
+        "horizon": "1–3 years",
+    },
+    "🏗️ AI Infrastructure (Not Nvidia — the boring enablers)": {
+        "why": "Everyone buys NVDA GPUs. Nobody buys the power management, cooling, and data centre networking companies that make them run. Classic 'picks and shovels' play.",
+        "catalyst": "AI capex continues. Hyperscaler earnings calling out specific bottlenecks.",
+        "tam": "AI data center market $700B by 2030. Power + cooling = 20-30% of that.",
+        "boring_factor": "Power management and cooling are not exciting. No headlines.",
+        "seeds_us": ["VRT", "SMCI", "CRDO", "LSCC", "AEIS", "ACLS", "ONTO"],
+        "seeds_in": ["IDFCFIRSTB.NS", "CESC.NS", "TORNTPOWER.NS"],
+        "horizon": "6–18 months",
+    },
+    "🌿 Precision / Vertical Farming": {
+        "why": "Climate change + water scarcity is making outdoor farming unreliable. Vertical farms use 95% less water, no pesticides, 365-day yield.",
+        "catalyst": "Cost of LED lighting falling 40%/year. First profitable vertical farm IPO.",
+        "tam": "$50B TAM by 2030. Food security is a national priority.",
+        "boring_factor": "Agriculture = slow and low-margin in investor minds.",
+        "seeds_us": ["APPH", "IIPR", "VITL", "AGRI", "NVTS"],
+        "seeds_in": ["KAVERI.NS", "PIIND.NS", "COROMANDEL.NS"],
+        "horizon": "2–4 years",
+    },
+    "🧠 Brain-Computer Interface (BCI)": {
+        "why": "Neuralink showed it's real. Next: treating paralysis, depression, memory loss. Then: human-AI interface. Adjacents are public and cheap.",
+        "catalyst": "First FDA-approved BCI for paralysis treatment. Neuralink going public.",
+        "tam": "$20B TAM by 2030 (medical). $500B+ eventually (consumer).",
+        "boring_factor": "Sounds like sci-fi. Only Neuralink is known — it's private. Public adjacents are ignored.",
+        "seeds_us": ["NURO", "PRCT", "CEVA", "MXGY", "AXNX"],
+        "seeds_in": [],
+        "horizon": "2–5 years",
+    },
+    "🌊 Water Technology": {
+        "why": "Fresh water scarcity is the silent crisis. Desalination, water recycling, pipe leak detection. Every country's infrastructure is aging.",
+        "catalyst": "Drought events triggering emergency infrastructure spending. Government mandates.",
+        "tam": "$1T+ global water infrastructure market.",
+        "boring_factor": "Water utilities are seen as boring/regulated. No growth narrative.",
+        "seeds_us": ["ERII", "CWCO", "ARTW", "MSEX", "YORW", "PNTM"],
+        "seeds_in": ["VA.NS", "WELSPUNIND.NS", "WABAG.NS", "KRBL.NS"],
+        "horizon": "1–3 years",
+    },
+    "⚡ Grid-Scale Energy Storage": {
+        "why": "Solar and wind are intermittent. The missing link is cheap long-duration storage. Whoever solves this = $10T market.",
+        "catalyst": "Battery price below $50/kWh. Utility contract announcements.",
+        "tam": "$500B+ TAM by 2035. Every solar/wind project needs storage.",
+        "boring_factor": "Not batteries for cars — boring utility infrastructure. Analysts don't cover it.",
+        "seeds_us": ["FLUX", "STEM", "AMPS", "FREYR", "BLNK", "NRGV"],
+        "seeds_in": ["AMARARAJA.NS", "EXIDE.NS", "GREENZO.NS"],
+        "horizon": "2–4 years",
+    },
+    "💊 GLP-1 Supply Chain (Not Novo/Eli Lilly — the enablers)": {
+        "why": "GLP-1 drugs are the fastest-growing drug class ever. But Novo Nordisk and Eli Lilly need raw materials, cold chain, injection devices, and contract manufacturers. These are cheap and ignored.",
+        "catalyst": "GLP-1 prescription volumes double. API supply contracts announced.",
+        "tam": "$130B GLP-1 market by 2030. Supply chain = 15-20% of that.",
+        "boring_factor": "Contract pharma manufacturing is not sexy. Raw material companies are never covered.",
+        "seeds_us": ["CTLT", "PACB", "AMAG", "LHCG", "PRGO", "PCRX"],
+        "seeds_in": ["DIVIS.NS", "SOLARA.NS", "NEULAND.NS", "SUVEN.NS"],
+        "horizon": "1–2 years",
+    },
+    "🔭 Custom Industry": {
+        "why": "Enter your own emerging industry for AI-powered discovery.",
+        "catalyst": "User-defined",
+        "tam": "User-defined",
+        "boring_factor": "User-defined",
+        "seeds_us": [],
+        "seeds_in": [],
+        "horizon": "User-defined",
+    },
+}
+HIDDEN_GEM_WEIGHTS = {
+    "undiscovery": 0.35,   # low analyst count, small cap, not in indices
+    "fundamental":  0.30,  # revenue growth, margins, cash
+    "early_timing": 0.25,  # stock hasn't run yet, price is flat/sideways
+    "management":   0.10,  # insider ownership, insider buying
+}
+
+
+
 default_market = st.session_state.get("shared_market_label", "🇮🇳 NSE (India)")
 market_idx     = list(MARKETS.keys()).index(default_market) if default_market in MARKETS else 0
 
@@ -11939,126 +12058,8 @@ Return ONLY the JSON array, no other text."""
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Emerging industries with seed tickers, TAM context, and why they're undervalued
-EMERGING_INDUSTRIES = {
-    "⚛️ Quantum Computing": {
-        "why": "Will break current encryption and solve optimization problems impossible for classical computers. Most investors don't understand it — they avoid it.",
-        "catalyst": "First fault-tolerant quantum computer. Enterprise contracts from banks/pharma.",
-        "tam": "$850B+ TAM by 2040. Currently <$2B in revenue globally.",
-        "boring_factor": "Too technical to understand. Seems like 'sci-fi'. Years from mainstream.",
-        "seeds_us": ["IONQ", "RGTI", "QUBT", "ARQQ", "QMCO", "QTUM"],
-        "seeds_in": [],
-        "horizon": "1–3 years",
-    },
-    "🔋 Small Modular Reactors (SMR)": {
-        "why": "AI data centers need 10–100× more power. SMRs are the only clean, always-on baseload solution. Nuclear = old and scary to most investors.",
-        "catalyst": "First commercial SMR power purchase agreement. NRC approval.",
-        "tam": "$300B TAM by 2040. Microsoft/Google already signed SMR deals.",
-        "boring_factor": "Nuclear is 50-year-old technology. Most ESG funds avoid it. Media treats it negatively.",
-        "seeds_us": ["SMR", "OKLO", "BWXT", "LEU", "NNE", "UUUU", "UEC"],
-        "seeds_in": ["RVNL.NS", "LTTS.NS"],
-        "horizon": "2–5 years",
-    },
-    "🛸 Satellite-to-Mobile (Direct-to-Device)": {
-        "why": "Every phone on earth gets satellite coverage without a special device. Eliminates dead zones. Massive for insurance, IoT, emergency services.",
-        "catalyst": "Commercial launch + carrier agreements. FCC approval.",
-        "tam": "$100B+ TAM. Carriers pay per subscriber connected.",
-        "boring_factor": "Satellite companies have failed before (Iridium, etc.). History makes investors cautious.",
-        "seeds_us": ["ASTS", "IRDM", "GSAT", "SPOK"],
-        "seeds_in": [],
-        "horizon": "1–2 years",
-    },
-    "🧬 Longevity / Anti-Aging Biotech": {
-        "why": "Drugs that extend healthy lifespan by targeting aging itself. GLP-1 showed biology can be hacked. Rapamycin, senolytics, NAD+ are next.",
-        "catalyst": "Clinical trial data on aging biomarkers. FDA accepting 'aging' as treatable disease.",
-        "tam": "$600B+ TAM. Every human is the customer.",
-        "boring_factor": "Seen as science fiction. No clear FDA pathway yet. Long timelines.",
-        "seeds_us": ["LLYP", "ARWR", "UNITY", "ADTX", "SRRK", "BIO"],
-        "seeds_in": [],
-        "horizon": "2–5 years",
-    },
-    "🛡️ Defence Tech (Autonomous + AI-Driven)": {
-        "why": "Ukraine/Israel/Taiwan conflicts driving massive re-arming. AI-driven drones, cyber defence, and electronic warfare replacing legacy hardware.",
-        "catalyst": "Government contracts. NATO/QUAD defence spending increases.",
-        "tam": "$2T global defence spending. AI defence is <1% of that.",
-        "boring_factor": "Defence is 'old economy'. Ethical concerns. Contracts take years.",
-        "seeds_us": ["KTOS", "AVAV", "RCAT", "JOBY", "ACHR", "PLTR"],
-        "seeds_in": ["PARAS.NS", "MTAR.NS", "DRALAL.NS", "BEL.NS", "HAL.NS"],
-        "horizon": "1–3 years",
-    },
-    "🏗️ AI Infrastructure (Not Nvidia — the boring enablers)": {
-        "why": "Everyone buys NVDA GPUs. Nobody buys the power management, cooling, and data centre networking companies that make them run. Classic 'picks and shovels' play.",
-        "catalyst": "AI capex continues. Hyperscaler earnings calling out specific bottlenecks.",
-        "tam": "AI data center market $700B by 2030. Power + cooling = 20-30% of that.",
-        "boring_factor": "Power management and cooling are not exciting. No headlines.",
-        "seeds_us": ["VRT", "SMCI", "CRDO", "LSCC", "AEIS", "ACLS", "ONTO"],
-        "seeds_in": ["IDFCFIRSTB.NS", "CESC.NS", "TORNTPOWER.NS"],
-        "horizon": "6–18 months",
-    },
-    "🌿 Precision / Vertical Farming": {
-        "why": "Climate change + water scarcity is making outdoor farming unreliable. Vertical farms use 95% less water, no pesticides, 365-day yield.",
-        "catalyst": "Cost of LED lighting falling 40%/year. First profitable vertical farm IPO.",
-        "tam": "$50B TAM by 2030. Food security is a national priority.",
-        "boring_factor": "Agriculture = slow and low-margin in investor minds.",
-        "seeds_us": ["APPH", "IIPR", "VITL", "AGRI", "NVTS"],
-        "seeds_in": ["KAVERI.NS", "PIIND.NS", "COROMANDEL.NS"],
-        "horizon": "2–4 years",
-    },
-    "🧠 Brain-Computer Interface (BCI)": {
-        "why": "Neuralink showed it's real. Next: treating paralysis, depression, memory loss. Then: human-AI interface. Adjacents are public and cheap.",
-        "catalyst": "First FDA-approved BCI for paralysis treatment. Neuralink going public.",
-        "tam": "$20B TAM by 2030 (medical). $500B+ eventually (consumer).",
-        "boring_factor": "Sounds like sci-fi. Only Neuralink is known — it's private. Public adjacents are ignored.",
-        "seeds_us": ["NURO", "PRCT", "CEVA", "MXGY", "AXNX"],
-        "seeds_in": [],
-        "horizon": "2–5 years",
-    },
-    "🌊 Water Technology": {
-        "why": "Fresh water scarcity is the silent crisis. Desalination, water recycling, pipe leak detection. Every country's infrastructure is aging.",
-        "catalyst": "Drought events triggering emergency infrastructure spending. Government mandates.",
-        "tam": "$1T+ global water infrastructure market.",
-        "boring_factor": "Water utilities are seen as boring/regulated. No growth narrative.",
-        "seeds_us": ["ERII", "CWCO", "ARTW", "MSEX", "YORW", "PNTM"],
-        "seeds_in": ["VA.NS", "WELSPUNIND.NS", "WABAG.NS", "KRBL.NS"],
-        "horizon": "1–3 years",
-    },
-    "⚡ Grid-Scale Energy Storage": {
-        "why": "Solar and wind are intermittent. The missing link is cheap long-duration storage. Whoever solves this = $10T market.",
-        "catalyst": "Battery price below $50/kWh. Utility contract announcements.",
-        "tam": "$500B+ TAM by 2035. Every solar/wind project needs storage.",
-        "boring_factor": "Not batteries for cars — boring utility infrastructure. Analysts don't cover it.",
-        "seeds_us": ["FLUX", "STEM", "AMPS", "FREYR", "BLNK", "NRGV"],
-        "seeds_in": ["AMARARAJA.NS", "EXIDE.NS", "GREENZO.NS"],
-        "horizon": "2–4 years",
-    },
-    "💊 GLP-1 Supply Chain (Not Novo/Eli Lilly — the enablers)": {
-        "why": "GLP-1 drugs are the fastest-growing drug class ever. But Novo Nordisk and Eli Lilly need raw materials, cold chain, injection devices, and contract manufacturers. These are cheap and ignored.",
-        "catalyst": "GLP-1 prescription volumes double. API supply contracts announced.",
-        "tam": "$130B GLP-1 market by 2030. Supply chain = 15-20% of that.",
-        "boring_factor": "Contract pharma manufacturing is not sexy. Raw material companies are never covered.",
-        "seeds_us": ["CTLT", "PACB", "AMAG", "LHCG", "PRGO", "PCRX"],
-        "seeds_in": ["DIVIS.NS", "SOLARA.NS", "NEULAND.NS", "SUVEN.NS"],
-        "horizon": "1–2 years",
-    },
-    "🔭 Custom Industry": {
-        "why": "Enter your own emerging industry for AI-powered discovery.",
-        "catalyst": "User-defined",
-        "tam": "User-defined",
-        "boring_factor": "User-defined",
-        "seeds_us": [],
-        "seeds_in": [],
-        "horizon": "User-defined",
-    },
-}
-
 # Hidden gem scoring weights — opposite of momentum screener
 # We WANT: low coverage, flat stock, great fundamentals
-HIDDEN_GEM_WEIGHTS = {
-    "undiscovery": 0.35,   # low analyst count, small cap, not in indices
-    "fundamental":  0.30,  # revenue growth, margins, cash
-    "early_timing": 0.25,  # stock hasn't run yet, price is flat/sideways
-    "management":   0.10,  # insider ownership, insider buying
-}
-
 
 @st.cache_data(ttl=600, show_spinner=False)
 def compute_hidden_gem_score(sym):
