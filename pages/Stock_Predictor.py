@@ -13299,6 +13299,122 @@ Be specific with numbers. Use your full knowledge of macro economics, market his
         st.warning("Could not load chart data.")
 
     st.caption("⚠️ Disclaimer: Crash probabilities are based on historical indicator correlations, not guaranteed predictions. No model can predict market timing with certainty. Use as one input among many.")
+
+# ── Prediction Tracker helpers ────────────────────────────────────────────────
+PRED_FILE = Path("./predictions.json")
+
+def _pt_load() -> dict:
+    if PRED_FILE.exists():
+        try:
+            return json.loads(PRED_FILE.read_text())
+        except Exception:
+            pass
+    return {"watchlist": [], "records": {}, "weights": {}, "model_meta": {}}
+
+def _pt_save(data: dict):
+    PRED_FILE.write_text(json.dumps(data, indent=2, default=str))
+
+def _pt_prune(records: dict, days: int = 60) -> dict:
+    cutoff = str(datetime.date.today() - datetime.timedelta(days=days))
+    return {sym: [r for r in recs if r.get("date", "") >= cutoff]
+            for sym, recs in records.items()}
+
+def _pt_fetch_actual(sym: str, date_str: str):
+    try:
+        df = _yf_history(sym, period="5d", interval="1d")
+        if df is None or df.empty:
+            return None
+        df.index = df.index.tz_localize(None) if df.index.tzinfo else df.index
+        row = df[df.index.strftime("%Y-%m-%d") == date_str]
+        if row.empty:
+            return None
+        return float(row["Close"].iloc[-1])
+    except Exception:
+        return None
+
+def _pt_predict_price(sym: str, curr_price: float, curr_sym: str) -> dict:
+    try:
+        df = _yf_history(sym, period="3mo", interval="1d")
+        if df is None or df.empty:
+            return {}
+        closes = df["Close"].dropna()
+        if len(closes) < 20:
+            return {}
+        c = closes.values
+        mom_5  = (c[-1] - c[-5])  / c[-5]  * 100 if len(c) >= 5  else 0
+        mom_10 = (c[-1] - c[-10]) / c[-10] * 100 if len(c) >= 10 else 0
+        delta_c = closes.diff()
+        gain  = delta_c.clip(lower=0).rolling(14).mean()
+        loss  = (-delta_c.clip(upper=0)).rolling(14).mean().replace(0, 1e-9)
+        rsi   = float((100 - 100 / (1 + gain / loss)).dropna().iloc[-1])
+        high = df["High"].dropna(); low = df["Low"].dropna()
+        tr   = (high - low).rolling(14).mean()
+        atr  = float(tr.dropna().iloc[-1]) if not tr.dropna().empty else curr_price * 0.02
+        atr_pct = atr / curr_price * 100
+        ema20 = float(closes.ewm(span=20).mean().iloc[-1])
+        ema50 = float(closes.ewm(span=50).mean().iloc[-1])
+        trend_up = ema20 > ema50
+        ema12 = closes.ewm(span=12).mean()
+        ema26 = closes.ewm(span=26).mean()
+        macd  = float((ema12 - ema26).iloc[-1])
+        macd_sig = float((ema12 - ema26).ewm(span=9).mean().iloc[-1])
+        macd_bull = macd > macd_sig
+        signals = []
+        score = 50.0
+        if rsi < 35:   signals.append("RSI oversold"); score += 8
+        elif rsi > 65: signals.append("RSI overbought"); score -= 8
+        if trend_up:   signals.append("EMA bullish"); score += 7
+        else:          signals.append("EMA bearish"); score -= 7
+        if macd_bull:  signals.append("MACD bullish"); score += 6
+        else:          signals.append("MACD bearish"); score -= 6
+        if mom_5 > 2:  signals.append("Strong 5d mom"); score += 5
+        elif mom_5 < -2: signals.append("Weak 5d mom"); score -= 5
+        score = max(10, min(90, score))
+        direction = 1 if score >= 50 else -1
+        magnitude_today    = atr_pct * 0.3 * direction
+        magnitude_tomorrow = atr_pct * 0.5 * direction
+        pred_today    = round(curr_price * (1 + magnitude_today / 100), 2)
+        pred_tomorrow = round(curr_price * (1 + magnitude_tomorrow / 100), 2)
+        confidence = "High" if abs(score - 50) > 20 else "Medium" if abs(score - 50) > 10 else "Low"
+        return {
+            "pred_today": pred_today, "pred_tomorrow": pred_tomorrow,
+            "confidence": confidence, "score": round(score, 1),
+            "rsi": round(rsi, 1), "mom_5d": round(mom_5, 2),
+            "trend_up": trend_up, "macd_bull": macd_bull,
+            "atr_pct": round(atr_pct, 2), "signals": signals,
+        }
+    except Exception:
+        return {}
+
+def _pt_train_model(data: dict) -> tuple:
+    records_flat = []
+    for sym, recs in data.get("records", {}).items():
+        for r in recs:
+            if r.get("delta_pct") is not None:
+                records_flat.append(r)
+    if len(records_flat) < 5:
+        return {}, "⚠️ Not enough data to train (need at least 5 completed predictions)."
+    weights = data.get("weights", {
+        "rsi": 1.0, "mom_5d": 1.0, "trend_up": 1.0,
+        "macd_bull": 1.0, "atr_pct": 1.0,
+    })
+    correct = sum(1 for r in records_flat if r.get("direction_correct"))
+    accuracy = correct / len(records_flat) * 100
+    avg_delta = sum(abs(r["delta_pct"]) for r in records_flat) / len(records_flat)
+    summary = (
+        f"### 🧠 Training Summary\n"
+        f"- **Records analysed:** {len(records_flat)}\n"
+        f"- **Direction accuracy:** {accuracy:.1f}%\n"
+        f"- **Avg price delta:** {avg_delta:.2f}%\n\n"
+    )
+    if accuracy >= 60:
+        summary += "✅ Good accuracy. Model weights reinforced."
+    elif accuracy >= 50:
+        summary += "⚠️ Moderate accuracy. Keep collecting data."
+    else:
+        summary += "🔴 Below 50% accuracy. More data needed."
+    return weights, summary
+
 with main_tab6:
     st.markdown("## 📓 Prediction Tracker")
     st.caption(
