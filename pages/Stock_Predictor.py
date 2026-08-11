@@ -13609,7 +13609,7 @@ with main_tab6:
                 "Price at Pred":  f"${_latest.get('price_at_pred',0):.2f}",
                 "Pred Today":     f"${_latest.get('pred_today',0):.2f}",
                 "Pred Tomorrow":  f"${_latest.get('pred_tomorrow',0):.2f}",
-                "Confidence":     f"{_latest.get('confidence',0):.0f}%",
+                "Confidence":     str(_latest.get('confidence', '—')),
                 "Actual (yest)":  f"${_prev.get('actual',0):.2f}" if _prev.get("actual") else "—",
                 "Delta %":        f"{_prev.get('delta_pct',0):+.2f}%" if _prev.get("delta_pct") is not None else "—",
                 "Dir Correct":    "✅" if _prev.get("direction_correct") else ("❌" if _prev.get("direction_correct") is False else "—"),
