@@ -13650,33 +13650,79 @@ with main_tab6:
                         + (f" | Avg delta: {_avg_d:.2f}%" if _avg_d else "")
                         + (f" | Direction accuracy: {_dir_a:.0f}%" if _dir_a else ""))
             with st.expander(_exp_lbl, expanded=False):
-                # Signals from latest prediction
                 _latest = _rows[0]
+
+                # ── Signals strip ─────────────────────────────────────────────
                 if _latest.get("signals"):
-                    st.markdown("**Signals used in latest prediction:**")
-                    for _sig in _latest["signals"]:
-                        st.markdown(f"  - {_sig}")
+                    st.markdown("**Latest signals:** " + " · ".join(_latest["signals"]))
 
-                # History table
-                _hist_rows = []
-                for _r in _rows[:30]:
-                    _hist_rows.append({
-                        "Date":        _r["date"],
-                        "Price":       f"${_r.get('price_at_pred',0):.2f}",
-                        "Pred Today":  f"${_r.get('pred_today',0):.2f}",
-                        "Pred Tomor":  f"${_r.get('pred_tomorrow',0):.2f}",
-                        "Actual":      f"${_r['actual']:.2f}" if _r.get("actual") else "Pending",
-                        "Delta %":     f"{_r['delta_pct']:+.2f}%" if _r.get("delta_pct") is not None else "—",
-                        "Delta $":     f"${_r['delta_abs']:+.2f}" if _r.get("delta_abs") is not None else "—",
-                        "Dir ✓":       "✅" if _r.get("direction_correct") else ("❌" if _r.get("direction_correct") is False else "—"),
-                        "Conf":        f"{_r.get('confidence',0):.0f}%",
-                        "RSI":         f"{_r.get('rsi',0):.0f}" if _r.get("rsi") else "—",
-                        "Score":       f"{_r.get('score',0):+.2f}",
-                    })
-                if _hist_rows:
-                    st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
+                # ── Calendar view — last 30 days ──────────────────────────────
+                st.markdown("#### 📅 30-Day Calendar")
+                _today = datetime.date.today()
+                _cal_days = [str(_today - datetime.timedelta(days=i)) for i in range(29, -1, -1)]
+                _rec_by_date = {r["date"]: r for r in _rows}
 
-                # Accuracy chart — predicted vs actual over time
+                # Build 5-column week grid
+                _cal_cols = st.columns(7)
+                _day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                for _dl in _day_labels:
+                    _cal_cols[_day_labels.index(_dl)].markdown(
+                        f"<div style='text-align:center;font-size:0.7rem;color:#666;font-weight:600'>{_dl}</div>",
+                        unsafe_allow_html=True
+                    )
+
+                # Find weekday of first day to offset
+                _first_date = datetime.date.fromisoformat(_cal_days[0])
+                _offset = _first_date.weekday()  # 0=Mon
+                _cells = [""] * _offset + _cal_days
+                # Pad to multiple of 7
+                while len(_cells) % 7 != 0:
+                    _cells.append("")
+
+                for _week_start in range(0, len(_cells), 7):
+                    _week_cols = st.columns(7)
+                    for _wd, _cell_date in enumerate(_cells[_week_start:_week_start+7]):
+                        with _week_cols[_wd]:
+                            if not _cell_date:
+                                st.markdown("<div style='height:60px'></div>", unsafe_allow_html=True)
+                                continue
+                            _rec = _rec_by_date.get(_cell_date)
+                            _day_num = datetime.date.fromisoformat(_cell_date).day
+                            if _rec:
+                                _actual = _rec.get("actual")
+                                _delta  = _rec.get("delta_pct")
+                                _price  = _rec.get("price_at_pred", 0)
+                                _pred   = _rec.get("pred_tomorrow", 0)
+                                if _actual and _delta is not None:
+                                    _bg = "#0a2a0a" if _delta >= 0 else "#2a0a0a"
+                                    _dc = "#00c853" if _delta >= 0 else "#ff5252"
+                                    _body = (f"<div style='font-size:0.65rem;color:#aaa'>${_price:.0f}</div>"
+                                             f"<div style='font-size:0.65rem;color:#888'>→${_actual:.0f}</div>"
+                                             f"<div style='font-size:0.7rem;font-weight:700;color:{_dc}'>{_delta:+.1f}%</div>")
+                                else:
+                                    _bg = "#111"
+                                    _body = (f"<div style='font-size:0.65rem;color:#aaa'>${_price:.0f}</div>"
+                                             f"<div style='font-size:0.65rem;color:#555'>→${_pred:.0f}</div>"
+                                             f"<div style='font-size:0.65rem;color:#666'>Pending</div>")
+                                st.markdown(
+                                    f"<div style='background:{_bg};border-radius:6px;padding:4px 3px;"
+                                    f"text-align:center;min-height:58px;border:1px solid #222'>"
+                                    f"<div style='font-size:0.75rem;color:#ccc;font-weight:600'>{_day_num}</div>"
+                                    f"{_body}</div>",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                _is_today = _cell_date == str(_today)
+                                _border = "1px solid #2979ff" if _is_today else "1px solid #1a1a1a"
+                                st.markdown(
+                                    f"<div style='background:#0e1117;border-radius:6px;padding:4px 3px;"
+                                    f"text-align:center;min-height:58px;border:{_border}'>"
+                                    f"<div style='font-size:0.75rem;color:#444'>{_day_num}</div>"
+                                    f"<div style='font-size:0.6rem;color:#333'>—</div></div>",
+                                    unsafe_allow_html=True
+                                )
+
+                # ── Accuracy chart ────────────────────────────────────────────
                 _charted = [r for r in reversed(_rows) if r.get("actual")]
                 if len(_charted) >= 2:
                     _ch_fig = go.Figure()
@@ -13691,7 +13737,7 @@ with main_tab6:
                         name="Actual", line=dict(color="#00c853"), mode="lines+markers"
                     ))
                     _ch_fig.update_layout(
-                        template="plotly_dark", height=280,
+                        template="plotly_dark", height=260,
                         margin=dict(t=20, b=20), showlegend=True,
                         title=f"{_psym} — Predicted vs Actual",
                     )
