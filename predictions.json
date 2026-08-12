@@ -1,1 +1,188 @@
-{"watchlist": ["AVGO", "NVDA", "SNDK", "SERV", "IREN"], "records": {"AVGO": [{"date": "2026-08-11", "price_at_pred": 424.125, "pred_today": 427.08, "pred_tomorrow": 430.04, "confidence": 58.0, "score": 0.4, "rsi": 68.7, "mom_5d": 1.43, "trend_up": true, "macd_bull": true, "atr_pct": 3.49, "signals": ["RSI 69 \u2014 mild bullish momentum", "MACD bullish cross", "EMA20 > EMA50 \u2014 uptrend", "Near upper Bollinger Band \u2014 extended"], "actual": null, "delta_pct": null, "delta_abs": null, "direction_correct": null}], "NVDA": [{"date": "2026-08-11", "price_at_pred": 218.85000610351562, "pred_today": 220.46, "pred_tomorrow": 222.08, "confidence": 59.0, "score": 0.45, "rsi": 58.6, "mom_5d": 3.26, "trend_up": true, "macd_bull": true, "atr_pct": 3.28, "signals": ["MACD bullish cross", "EMA20 > EMA50 \u2014 uptrend", "Near upper Bollinger Band \u2014 extended", "5d momentum +3.3%"], "actual": null, "delta_pct": null, "delta_abs": null, "direction_correct": null}], "SNDK": [{"date": "2026-08-11", "price_at_pred": 1246.405029296875, "pred_today": 1257.47, "pred_tomorrow": 1268.53, "confidence": 53.0, "score": 0.15, "rsi": 37.8, "mom_5d": -12.69, "trend_up": false, "macd_bull": true, "atr_pct": 11.84, "signals": ["RSI 38 \u2014 neutral-to-bullish", "MACD bullish cross", "EMA20 < EMA50 \u2014 downtrend", "5d momentum -12.7%"], "actual": null, "delta_pct": null, "delta_abs": null, "direction_correct": null}], "SERV": [{"date": "2026-08-11", "price_at_pred": 4.940000057220459, "pred_today": 4.97, "pred_tomorrow": 5.0, "confidence": 53.0, "score": 0.15, "rsi": 43.1, "mom_5d": -13.18, "trend_up": false, "macd_bull": true, "atr_pct": 8.01, "signals": ["RSI 43 \u2014 neutral-to-bullish", "MACD bullish cross", "EMA20 < EMA50 \u2014 downtrend", "5d momentum -13.2%"], "actual": null, "delta_pct": null, "delta_abs": null, "direction_correct": null}], "IREN": [{"date": "2026-08-11", "price_at_pred": 38.915000915527344, "pred_today": 39.2, "pred_tomorrow": 39.48, "confidence": 53.0, "score": 0.15, "rsi": 46.6, "mom_5d": -4.74, "trend_up": false, "macd_bull": true, "atr_pct": 9.68, "signals": ["RSI 47 \u2014 neutral-to-bullish", "MACD bullish cross", "EMA20 < EMA50 \u2014 downtrend", "5d momentum -4.7%"], "actual": null, "delta_pct": null, "delta_abs": null, "direction_correct": null}]}, "weights": {}, "model_meta": {}, "last_update": "2026-08-11"}
+{
+  "watchlist": [
+    "AVGO",
+    "NVDA",
+    "SNDK",
+    "SERV",
+    "IREN",
+    "MRVL",
+    "MU"
+  ],
+  "records": {
+    "AVGO": [
+      {
+        "date": "2026-08-11",
+        "price_at_pred": 424.125,
+        "pred_today": 427.08,
+        "pred_tomorrow": 430.04,
+        "confidence": 58.0,
+        "score": 0.4,
+        "rsi": 68.7,
+        "mom_5d": 1.43,
+        "trend_up": true,
+        "macd_bull": true,
+        "atr_pct": 3.49,
+        "signals": [
+          "RSI 69 \u2014 mild bullish momentum",
+          "MACD bullish cross",
+          "EMA20 > EMA50 \u2014 uptrend",
+          "Near upper Bollinger Band \u2014 extended"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ],
+    "NVDA": [
+      {
+        "date": "2026-08-11",
+        "price_at_pred": 218.85000610351562,
+        "pred_today": 220.46,
+        "pred_tomorrow": 222.08,
+        "confidence": 59.0,
+        "score": 0.45,
+        "rsi": 58.6,
+        "mom_5d": 3.26,
+        "trend_up": true,
+        "macd_bull": true,
+        "atr_pct": 3.28,
+        "signals": [
+          "MACD bullish cross",
+          "EMA20 > EMA50 \u2014 uptrend",
+          "Near upper Bollinger Band \u2014 extended",
+          "5d momentum +3.3%"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ],
+    "SNDK": [
+      {
+        "date": "2026-08-11",
+        "price_at_pred": 1246.405029296875,
+        "pred_today": 1257.47,
+        "pred_tomorrow": 1268.53,
+        "confidence": 53.0,
+        "score": 0.15,
+        "rsi": 37.8,
+        "mom_5d": -12.69,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 11.84,
+        "signals": [
+          "RSI 38 \u2014 neutral-to-bullish",
+          "MACD bullish cross",
+          "EMA20 < EMA50 \u2014 downtrend",
+          "5d momentum -12.7%"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ],
+    "SERV": [
+      {
+        "date": "2026-08-11",
+        "price_at_pred": 4.940000057220459,
+        "pred_today": 4.97,
+        "pred_tomorrow": 5.0,
+        "confidence": 53.0,
+        "score": 0.15,
+        "rsi": 43.1,
+        "mom_5d": -13.18,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 8.01,
+        "signals": [
+          "RSI 43 \u2014 neutral-to-bullish",
+          "MACD bullish cross",
+          "EMA20 < EMA50 \u2014 downtrend",
+          "5d momentum -13.2%"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ],
+    "IREN": [
+      {
+        "date": "2026-08-11",
+        "price_at_pred": 38.915000915527344,
+        "pred_today": 39.2,
+        "pred_tomorrow": 39.48,
+        "confidence": 53.0,
+        "score": 0.15,
+        "rsi": 46.6,
+        "mom_5d": -4.74,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 9.68,
+        "signals": [
+          "RSI 47 \u2014 neutral-to-bullish",
+          "MACD bullish cross",
+          "EMA20 < EMA50 \u2014 downtrend",
+          "5d momentum -4.7%"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ],
+    "MRVL": [
+      {
+        "date": "2026-08-11",
+        "price_at_pred": 210.11000061035156,
+        "pred_today": 205.82,
+        "pred_tomorrow": 202.95,
+        "confidence": "Low",
+        "score": 49.0,
+        "rsi": 49.7,
+        "mom_5d": -0.41,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 6.81,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ],
+    "MU": [
+      {
+        "date": "2026-08-11",
+        "price_at_pred": 856.030029296875,
+        "pred_today": 835.98,
+        "pred_tomorrow": 822.62,
+        "confidence": "Low",
+        "score": 44.0,
+        "rsi": 41.0,
+        "mom_5d": -4.16,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 7.81,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Weak 5d mom"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ]
+  },
+  "weights": {},
+  "model_meta": {},
+  "last_update": "2026-08-11"
+}

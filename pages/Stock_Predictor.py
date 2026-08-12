@@ -12766,6 +12766,92 @@ with main_tab4:
                 _tc4.metric("Fib 1.618 Target",f"{curr}{_tgt.get('fib_618',0):.2f}",
                             delta=f"+{(_tgt.get('fib_618',_cur_px)-_cur_px)/_cur_px*100:.1f}%", delta_color="normal")
 
+                # ── Multi-Timeframe Confluence ───────────────────────────────────
+                st.markdown("---")
+                st.markdown("### 🎯 Multi-Timeframe Confluence")
+                st.caption("Signal is only triggered when ≥ 2 of 3 timeframes agree — reduces false entries for scalping.")
+
+                _mtf_tfs = [
+                    ("1m",  "1d",  "⚡ 1-Min",  "Entry trigger"),
+                    ("5m",  "5d",  "📐 5-Min",  "Setup confirmation"),
+                    ("15m", "5d",  "🧭 15-Min", "Trend direction"),
+                ]
+
+                def _mtf_signal(df):
+                    """Derive a simple BUY / SELL / NEUTRAL from _compute_live_signals output."""
+                    s = _compute_live_signals(df)
+                    sig = s.get("signal", "INSUFFICIENT_DATA")
+                    if sig in ("INSUFFICIENT_DATA", "ERROR"):
+                        return "NEUTRAL", s
+                    rsi  = s.get("rsi") or 50
+                    mh   = s.get("macd_hist") or 0
+                    bbp  = s.get("bb_pct") or 50
+                    # BUY conditions: RSI rising from oversold, MACD histogram positive, price not extreme-high
+                    buy_score  = (1 if rsi < 55 else 0) + (1 if mh > 0 else 0) + (1 if bbp < 70 else 0)
+                    sell_score = (1 if rsi > 65 else 0) + (1 if mh < 0 else 0) + (1 if bbp > 75 else 0)
+                    if sig == "EXIT_NOW":
+                        direction = "SELL"
+                    elif sig == "HOLD_BUY_DIP":
+                        direction = "BUY"
+                    elif sell_score >= 2:
+                        direction = "SELL"
+                    elif buy_score >= 2:
+                        direction = "BUY"
+                    else:
+                        direction = "NEUTRAL"
+                    return direction, s
+
+                _mtf_results = []
+                _mtf_cols = st.columns(3)
+                for _ci, (_tf_interval, _tf_period, _tf_label, _tf_role) in enumerate(_mtf_tfs):
+                    _tf_df = _fetch_live_candles(_lm_sym, _tf_interval, _tf_period)
+                    _tf_dir, _tf_sig = _mtf_signal(_tf_df)
+                    _mtf_results.append(_tf_dir)
+                    with _mtf_cols[_ci]:
+                        _dir_color = "#00c853" if _tf_dir == "BUY" else "#ff5252" if _tf_dir == "SELL" else "#ff9800"
+                        _dir_icon  = "🟢" if _tf_dir == "BUY" else "🔴" if _tf_dir == "SELL" else "🟡"
+                        st.markdown(
+                            f"<div style='border:1px solid {_dir_color};border-radius:8px;padding:12px;text-align:center'>"
+                            f"<div style='font-size:0.8rem;color:#888'>{_tf_label} · {_tf_role}</div>"
+                            f"<div style='font-size:1.8rem;font-weight:800;color:{_dir_color}'>{_dir_icon} {_tf_dir}</div>"
+                            f"<div style='font-size:0.75rem;color:#aaa;margin-top:4px'>"
+                            f"RSI {(_tf_sig.get('rsi') or 0):.0f} · MACD hist {(_tf_sig.get('macd_hist') or 0):.3f}"
+                            f"</div></div>",
+                            unsafe_allow_html=True
+                        )
+
+                # Confluence verdict
+                _buy_votes  = _mtf_results.count("BUY")
+                _sell_votes = _mtf_results.count("SELL")
+                if _buy_votes >= 2:
+                    _conf_dir   = "BUY"
+                    _conf_icon  = "🟢"
+                    _conf_color = "#00c853"
+                    _conf_msg   = f"Strong confluence ({_buy_votes}/3 timeframes agree) — high-probability long entry"
+                elif _sell_votes >= 2:
+                    _conf_dir   = "SELL / EXIT"
+                    _conf_icon  = "🔴"
+                    _conf_color = "#ff5252"
+                    _conf_msg   = f"Strong confluence ({_sell_votes}/3 timeframes agree) — high-probability short/exit"
+                else:
+                    _conf_dir   = "WAIT"
+                    _conf_icon  = "🟡"
+                    _conf_color = "#ff9800"
+                    _conf_msg   = "Timeframes are mixed — no high-confidence signal right now. Stand aside."
+
+                st.markdown(
+                    f"<div style='background:{_conf_color}22;border:2px solid {_conf_color};"
+                    f"border-radius:10px;padding:16px;text-align:center;margin-top:12px'>"
+                    f"<div style='font-size:0.9rem;color:#aaa;letter-spacing:0.1em'>CONFLUENCE VERDICT</div>"
+                    f"<div style='font-size:2.4rem;font-weight:900;color:{_conf_color}'>{_conf_icon} {_conf_dir}</div>"
+                    f"<div style='font-size:0.85rem;color:#ccc;margin-top:4px'>{_conf_msg}</div>"
+                    f"<div style='font-size:0.75rem;color:#888;margin-top:8px'>"
+                    f"BUY: {_buy_votes}/3 · SELL: {_sell_votes}/3 · NEUTRAL: {_mtf_results.count('NEUTRAL')}/3"
+                    f"</div></div>",
+                    unsafe_allow_html=True
+                )
+                st.markdown("")
+
                 # ── TradingView Professional Chart ───────────────────────────────
                 import plotly.graph_objects as _go
                 from plotly.subplots import make_subplots as _msp
