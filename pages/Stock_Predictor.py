@@ -12769,16 +12769,40 @@ with main_tab4:
                 # ── Multi-Timeframe Confluence ───────────────────────────────────
                 st.markdown("---")
                 st.markdown("### 🎯 Multi-Timeframe Confluence")
-                st.caption("Signal is only triggered when ≥ 2 of 3 timeframes agree — reduces false entries for scalping.")
+
+                # Mode toggle: new entry vs already holding
+                _mtf_mode_col, _mtf_cost_col = st.columns([2, 2])
+                with _mtf_mode_col:
+                    _mtf_holding = st.toggle(
+                        "📦 I'm already holding this stock",
+                        value=st.session_state.get(f"mtf_holding_{_lm_sym}", False),
+                        key=f"mtf_holding_{_lm_sym}",
+                        help="Switch on if you already own this stock — verdict will tell you whether to hold, book partial profit, or fully exit."
+                    )
+                with _mtf_cost_col:
+                    if _mtf_holding:
+                        _mtf_avg_cost = st.number_input(
+                            "Your avg buy price (optional)",
+                            min_value=0.0, value=0.0, step=0.01,
+                            key=f"mtf_cost_{_lm_sym}",
+                            help="Enter the price at which you bought — we'll show your P&L and whether you're in profit territory."
+                        )
+                    else:
+                        _mtf_avg_cost = 0.0
+
+                if _mtf_holding:
+                    st.caption("Verdict tailored for position holders — tells you whether to sit tight, take some profit, or exit fully.")
+                else:
+                    st.caption("Signal fires only when ≥ 2 of 3 timeframes agree — reduces false entries for scalping.")
 
                 _mtf_tfs = [
-                    ("1m",  "1d",  "⚡ 1-Min",  "Entry trigger"),
+                    ("1m",  "1d",  "⚡ 1-Min",  "Entry / exit trigger"),
                     ("5m",  "5d",  "📐 5-Min",  "Setup confirmation"),
                     ("15m", "5d",  "🧭 15-Min", "Trend direction"),
                 ]
 
                 def _mtf_signal(df):
-                    """Derive a simple BUY / SELL / NEUTRAL from _compute_live_signals output."""
+                    """Derive BUY / SELL / NEUTRAL from _compute_live_signals output."""
                     s = _compute_live_signals(df)
                     sig = s.get("signal", "INSUFFICIENT_DATA")
                     if sig in ("INSUFFICIENT_DATA", "ERROR"):
@@ -12786,7 +12810,6 @@ with main_tab4:
                     rsi  = s.get("rsi") or 50
                     mh   = s.get("macd_hist") or 0
                     bbp  = s.get("bb_pct") or 50
-                    # BUY conditions: RSI rising from oversold, MACD histogram positive, price not extreme-high
                     buy_score  = (1 if rsi < 55 else 0) + (1 if mh > 0 else 0) + (1 if bbp < 70 else 0)
                     sell_score = (1 if rsi > 65 else 0) + (1 if mh < 0 else 0) + (1 if bbp > 75 else 0)
                     if sig == "EXIT_NOW":
@@ -12801,12 +12824,15 @@ with main_tab4:
                         direction = "NEUTRAL"
                     return direction, s
 
-                _mtf_results = []
+                # Fetch all three timeframes and compute signals
+                _mtf_results  = []
+                _mtf_sig_data = []
                 _mtf_cols = st.columns(3)
                 for _ci, (_tf_interval, _tf_period, _tf_label, _tf_role) in enumerate(_mtf_tfs):
                     _tf_df = _fetch_live_candles(_lm_sym, _tf_interval, _tf_period)
                     _tf_dir, _tf_sig = _mtf_signal(_tf_df)
                     _mtf_results.append(_tf_dir)
+                    _mtf_sig_data.append(_tf_sig)
                     with _mtf_cols[_ci]:
                         _dir_color = "#00c853" if _tf_dir == "BUY" else "#ff5252" if _tf_dir == "SELL" else "#ff9800"
                         _dir_icon  = "🟢" if _tf_dir == "BUY" else "🔴" if _tf_dir == "SELL" else "🟡"
@@ -12820,36 +12846,114 @@ with main_tab4:
                             unsafe_allow_html=True
                         )
 
-                # Confluence verdict
                 _buy_votes  = _mtf_results.count("BUY")
                 _sell_votes = _mtf_results.count("SELL")
-                if _buy_votes >= 2:
-                    _conf_dir   = "BUY"
-                    _conf_icon  = "🟢"
-                    _conf_color = "#00c853"
-                    _conf_msg   = f"Strong confluence ({_buy_votes}/3 timeframes agree) — high-probability long entry"
-                elif _sell_votes >= 2:
-                    _conf_dir   = "SELL / EXIT"
-                    _conf_icon  = "🔴"
-                    _conf_color = "#ff5252"
-                    _conf_msg   = f"Strong confluence ({_sell_votes}/3 timeframes agree) — high-probability short/exit"
-                else:
-                    _conf_dir   = "WAIT"
-                    _conf_icon  = "🟡"
-                    _conf_color = "#ff9800"
-                    _conf_msg   = "Timeframes are mixed — no high-confidence signal right now. Stand aside."
 
-                st.markdown(
-                    f"<div style='background:{_conf_color}22;border:2px solid {_conf_color};"
-                    f"border-radius:10px;padding:16px;text-align:center;margin-top:12px'>"
-                    f"<div style='font-size:0.9rem;color:#aaa;letter-spacing:0.1em'>CONFLUENCE VERDICT</div>"
-                    f"<div style='font-size:2.4rem;font-weight:900;color:{_conf_color}'>{_conf_icon} {_conf_dir}</div>"
-                    f"<div style='font-size:0.85rem;color:#ccc;margin-top:4px'>{_conf_msg}</div>"
-                    f"<div style='font-size:0.75rem;color:#888;margin-top:8px'>"
-                    f"BUY: {_buy_votes}/3 · SELL: {_sell_votes}/3 · NEUTRAL: {_mtf_results.count('NEUTRAL')}/3"
-                    f"</div></div>",
-                    unsafe_allow_html=True
-                )
+                # Aggregate indicators across timeframes for nuanced hold verdict
+                _avg_rsi   = sum((_mtf_sig_data[i].get("rsi") or 50) for i in range(3)) / 3
+                _avg_mh    = sum((_mtf_sig_data[i].get("macd_hist") or 0) for i in range(3)) / 3
+                _avg_bbp   = sum((_mtf_sig_data[i].get("bb_pct") or 50) for i in range(3)) / 3
+                _exit_now_count = sum(1 for d in _mtf_sig_data if d.get("signal") == "EXIT_NOW")
+
+                # P&L context
+                _pnl_pct = ((_cur_px - _mtf_avg_cost) / _mtf_avg_cost * 100) if _mtf_avg_cost > 0 else None
+
+                if _mtf_holding:
+                    # ── Holding mode verdict ─────────────────────────────────────
+                    # FULL EXIT: strong exit signal across ≥2 TFs, or RSI very overbought
+                    # BOOK PARTIAL: momentum fading (MACD hist turning negative) + in profit
+                    # HOLD & RIDE: trend intact, MACD positive, RSI not extreme
+                    # WAIT / MONITOR: mixed signals, no clear action
+
+                    _overbought  = _avg_rsi > 72
+                    _macd_fading = _avg_mh < 0
+                    _near_top_bb = _avg_bbp > 80
+                    _in_profit   = (_pnl_pct is not None and _pnl_pct > 0) or (_pnl_pct is None)
+
+                    if _exit_now_count >= 2 or (_sell_votes >= 2 and _overbought):
+                        _conf_dir   = "BOOK FULL PROFIT / EXIT"
+                        _conf_icon  = "🔴"
+                        _conf_color = "#ff5252"
+                        _reasons    = []
+                        if _exit_now_count >= 2: _reasons.append("EXIT NOW signal on multiple timeframes")
+                        if _overbought:          _reasons.append(f"avg RSI {_avg_rsi:.0f} — severely overbought")
+                        if _near_top_bb:         _reasons.append("price at upper Bollinger Band")
+                        _conf_msg   = "Strong exit signal across timeframes. " + " · ".join(_reasons) + ". Consider closing the full position."
+
+                    elif _sell_votes >= 2 or (_macd_fading and _near_top_bb):
+                        _conf_dir   = "BOOK PARTIAL PROFIT"
+                        _conf_icon  = "🟠"
+                        _conf_color = "#ff9800"
+                        _reasons    = []
+                        if _sell_votes >= 2: _reasons.append(f"{_sell_votes}/3 timeframes turning bearish")
+                        if _macd_fading:     _reasons.append("MACD momentum fading")
+                        if _near_top_bb:     _reasons.append(f"price at {_avg_bbp:.0f}% of Bollinger Band range")
+                        _conf_msg   = "Momentum is weakening. " + " · ".join(_reasons) + ". Book 30–50% and keep a trailing stop on the rest."
+
+                    elif _buy_votes >= 2 and not _macd_fading:
+                        _conf_dir   = "HOLD & RIDE"
+                        _conf_icon  = "🟢"
+                        _conf_color = "#00c853"
+                        _conf_msg   = f"Trend still intact ({_buy_votes}/3 timeframes bullish, MACD positive). Stay in the trade and trail your stop."
+
+                    else:
+                        _conf_dir   = "MONITOR — No action yet"
+                        _conf_icon  = "🟡"
+                        _conf_color = "#aaaaaa"
+                        _conf_msg   = "Mixed signals. Trend not broken but momentum is neutral. Hold position, tighten your stop, and watch the next candle."
+
+                    # Build verdict box
+                    _pnl_line = ""
+                    if _pnl_pct is not None:
+                        _pnl_color = "#00c853" if _pnl_pct >= 0 else "#ff5252"
+                        _pnl_sign  = "+" if _pnl_pct >= 0 else ""
+                        _pnl_line  = (f"<div style='font-size:0.85rem;color:{_pnl_color};margin-top:6px;font-weight:600'>"
+                                      f"Your P&L: {_pnl_sign}{_pnl_pct:.2f}%  (bought @ {curr}{_mtf_avg_cost:.2f} · now {curr}{_cur_px:.2f})"
+                                      f"</div>")
+
+                    st.markdown(
+                        f"<div style='background:{_conf_color}22;border:2px solid {_conf_color};"
+                        f"border-radius:10px;padding:16px;text-align:center;margin-top:12px'>"
+                        f"<div style='font-size:0.9rem;color:#aaa;letter-spacing:0.1em'>HOLDING VERDICT</div>"
+                        f"<div style='font-size:2rem;font-weight:900;color:{_conf_color}'>{_conf_icon} {_conf_dir}</div>"
+                        f"<div style='font-size:0.85rem;color:#ccc;margin-top:6px'>{_conf_msg}</div>"
+                        f"{_pnl_line}"
+                        f"<div style='font-size:0.75rem;color:#888;margin-top:8px'>"
+                        f"Avg RSI {_avg_rsi:.0f} · Avg MACD hist {_avg_mh:.4f} · BB position {_avg_bbp:.0f}%"
+                        f"</div></div>",
+                        unsafe_allow_html=True
+                    )
+
+                else:
+                    # ── Entry mode verdict (original) ────────────────────────────
+                    if _buy_votes >= 2:
+                        _conf_dir   = "BUY"
+                        _conf_icon  = "🟢"
+                        _conf_color = "#00c853"
+                        _conf_msg   = f"Strong confluence ({_buy_votes}/3 timeframes agree) — high-probability long entry"
+                    elif _sell_votes >= 2:
+                        _conf_dir   = "SELL / SHORT"
+                        _conf_icon  = "🔴"
+                        _conf_color = "#ff5252"
+                        _conf_msg   = f"Strong confluence ({_sell_votes}/3 timeframes agree) — avoid new longs"
+                    else:
+                        _conf_dir   = "WAIT"
+                        _conf_icon  = "🟡"
+                        _conf_color = "#ff9800"
+                        _conf_msg   = "Timeframes are mixed — no high-confidence entry right now. Stay out."
+
+                    st.markdown(
+                        f"<div style='background:{_conf_color}22;border:2px solid {_conf_color};"
+                        f"border-radius:10px;padding:16px;text-align:center;margin-top:12px'>"
+                        f"<div style='font-size:0.9rem;color:#aaa;letter-spacing:0.1em'>CONFLUENCE VERDICT</div>"
+                        f"<div style='font-size:2.4rem;font-weight:900;color:{_conf_color}'>{_conf_icon} {_conf_dir}</div>"
+                        f"<div style='font-size:0.85rem;color:#ccc;margin-top:4px'>{_conf_msg}</div>"
+                        f"<div style='font-size:0.75rem;color:#888;margin-top:8px'>"
+                        f"BUY: {_buy_votes}/3 · SELL: {_sell_votes}/3 · NEUTRAL: {_mtf_results.count('NEUTRAL')}/3"
+                        f"</div></div>",
+                        unsafe_allow_html=True
+                    )
+
                 st.markdown("")
 
                 # ── TradingView Professional Chart ───────────────────────────────
