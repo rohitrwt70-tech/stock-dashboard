@@ -9,5 +9,8 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["/bin/sh", "-c", "unset STREAMLIT_SERVER_PORT && streamlit run pages/Stock_Predictor.py --server.port 8080 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false"]
+COPY start.sh .
+RUN chmod +x start.sh
+
+CMD ["./start.sh"]
 
