@@ -9,8 +9,5 @@ COPY . .
 
 EXPOSE 8080
 
-COPY start.sh .
-RUN chmod +x start.sh
-
-CMD ["./start.sh"]
+CMD ["python", "launch.py"]
 
