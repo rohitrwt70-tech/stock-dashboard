@@ -12505,13 +12505,25 @@ with main_tab4:
         with lt2:
             st.markdown("### 📊 Live Candlestick Monitor")
 
-            # ── Auto-refresh every 5 seconds ────────────────────────────────────
-            try:
-                from streamlit_autorefresh import st_autorefresh as _st_ar
-                _ar_count = _st_ar(interval=5000, limit=None, key="ltm_autorefresh")
-                st.caption(f"🔄 Auto-refreshing every 5s · refresh #{_ar_count}")
-            except Exception:
-                st.caption("⚠️ streamlit-autorefresh not available — use manual Refresh button.")
+            # ── Live toggle + Auto-refresh ───────────────────────────────────────
+            _live_col1, _live_col2 = st.columns([1, 5])
+            with _live_col1:
+                _live_on = st.toggle(
+                    "🔴 LIVE",
+                    value=st.session_state.get("ltm_live_on", False),
+                    key="ltm_live_on",
+                    help="Turn on to auto-refresh every 5 seconds. Turn off when watching other tabs to save resources."
+                )
+            with _live_col2:
+                if _live_on:
+                    try:
+                        from streamlit_autorefresh import st_autorefresh as _st_ar
+                        _ar_count = _st_ar(interval=5000, limit=None, key="ltm_autorefresh")
+                        st.caption(f"🟢 Live · refreshing every 5s · cycle #{_ar_count}")
+                    except Exception:
+                        st.caption("⚠️ streamlit-autorefresh not available — use manual Refresh button.")
+                else:
+                    st.caption("⏸️ Live feed paused — toggle **🔴 LIVE** to start auto-refresh.")
 
             # Portfolio holdings set (locked — cannot be removed from watchlist UI)
             try:
