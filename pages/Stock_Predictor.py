@@ -12505,6 +12505,14 @@ with main_tab4:
         with lt2:
             st.markdown("### 📊 Live Candlestick Monitor")
 
+            # ── Auto-refresh every 5 seconds ────────────────────────────────────
+            try:
+                from streamlit_autorefresh import st_autorefresh as _st_ar
+                _ar_count = _st_ar(interval=5000, limit=None, key="ltm_autorefresh")
+                st.caption(f"🔄 Auto-refreshing every 5s · refresh #{_ar_count}")
+            except Exception:
+                st.caption("⚠️ streamlit-autorefresh not available — use manual Refresh button.")
+
             # Portfolio holdings set (locked — cannot be removed from watchlist UI)
             try:
                 _pf_locked = set(h["symbol"] for h in json.loads(PORTFOLIO_FILE.read_text()))
