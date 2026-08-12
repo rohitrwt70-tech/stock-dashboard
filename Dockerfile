@@ -9,9 +9,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD streamlit run pages/Stock_Predictor.py \
-    --server.port $PORT \
-    --server.address 0.0.0.0 \
-    --server.headless true \
-    --server.enableCORS false \
-    --server.enableXsrfProtection false
+CMD ["/bin/sh", "-c", "streamlit run pages/Stock_Predictor.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false"]
