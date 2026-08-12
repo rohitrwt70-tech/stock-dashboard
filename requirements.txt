@@ -25,3 +25,6 @@ schedule>=1.2.0
 websockets>=11.0
 httpx>=0.24.0
 tenacity>=8.0.0
+pdfplumber>=0.10.0
+pypdf>=3.0.0
+openpyxl>=3.1.0
