@@ -513,17 +513,42 @@ def _indmoney_list_tools(access_token):
     """Discover available MCP tools."""
     return _indmoney_mcp_call(access_token, "tools/list")
 
+_PKCE_FILE = Path("./indmoney_pkce.json")
+
+def _pkce_save(verifier):
+    try:
+        _PKCE_FILE.write_text(json.dumps({"verifier": verifier}))
+    except Exception:
+        pass
+
+def _pkce_load():
+    try:
+        if _PKCE_FILE.exists():
+            return json.loads(_PKCE_FILE.read_text()).get("verifier", "")
+    except Exception:
+        pass
+    return ""
+
+def _indmoney_get_redirect_uri():
+    """Return redirect URI — Railway URL in production, localhost in dev."""
+    env_uri = os.getenv("INDMONEY_REDIRECT_URI", "")
+    if env_uri:
+        return env_uri
+    # Fallback for local dev
+    return "http://localhost:8502"
+
 def _indmoney_build_auth_url():
     """Build the OAuth authorization URL with PKCE."""
     import base64, hashlib, secrets as _sec
     client_id    = os.getenv("INDMONEY_CLIENT_ID", "")
-    redirect_uri = os.getenv("INDMONEY_REDIRECT_URI", "")
+    redirect_uri = _indmoney_get_redirect_uri()
     # PKCE
     verifier  = _sec.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()
     ).rstrip(b"=").decode()
-    # Store verifier in session so callback can use it
+    # Persist verifier to file — session_state is lost on redirect
+    _pkce_save(verifier)
     st.session_state["indmoney_pkce_verifier"] = verifier
     params = (
         f"response_type=code"
@@ -539,13 +564,19 @@ def _indmoney_build_auth_url():
 # ── Handle OAuth callback (INDmoney redirects here with ?code=...) ─────────
 _qp = st.query_params
 if "code" in _qp and _qp.get("state") == "stockdashboard":
-    _auth_code    = _qp["code"]
-    _pkce_verifier = st.session_state.get("indmoney_pkce_verifier", "")
-    _tok, _tok_err = _indmoney_exchange_code(_auth_code, _pkce_verifier)
+    _auth_code     = _qp["code"]
+    # Load verifier from file first (session_state is empty on redirect)
+    _pkce_verifier = _pkce_load() or st.session_state.get("indmoney_pkce_verifier", "")
+    with st.spinner("Completing INDmoney authorisation…"):
+        _tok, _tok_err = _indmoney_exchange_code(_auth_code, _pkce_verifier)
     if _tok:
         st.session_state["indmoney_connected"] = True
+        try:
+            _PKCE_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
         st.query_params.clear()
-        st.success("✅ INDmoney connected successfully!")
+        st.success("✅ INDmoney connected! Go to 🗂️ My Stocks Hub tab.")
         st.rerun()
     else:
         st.error(f"INDmoney auth failed: {_tok_err}")
