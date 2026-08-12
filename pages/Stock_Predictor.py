@@ -10604,15 +10604,30 @@ with main_tab2:  # ← replacement block starts here
 
     @st.cache_data(ttl=15, show_spinner=False)
     def _fetch_live_candles(sym: str, interval: str, period: str, prepost: bool = True):
-        """Cached yfinance fetch with 15s TTL. Includes pre/post market when prepost=True."""
-        try:
-            df = yf.download(sym, period=period, interval=interval,
-                             progress=False, auto_adjust=True, prepost=prepost)
-            if hasattr(df.columns, "levels"):
-                df.columns = df.columns.get_level_values(0)
-            return df
-        except Exception:
-            return None
+        """Cached yfinance fetch with 15s TTL. Tries multiple period fallbacks for thin tickers."""
+        # Period fallback ladder: some tickers return empty for short periods
+        _period_ladder = {
+            "1m":  ["1d", "2d", "5d"],
+            "2m":  ["2d", "5d"],
+            "5m":  ["5d", "1mo"],
+            "15m": ["5d", "1mo"],
+            "30m": ["1mo"],
+            "1h":  ["3mo", "6mo"],
+        }
+        periods_to_try = _period_ladder.get(interval, [period])
+        if period not in periods_to_try:
+            periods_to_try = [period] + periods_to_try
+        for _p in periods_to_try:
+            try:
+                df = yf.download(sym, period=_p, interval=interval,
+                                 progress=False, auto_adjust=True, prepost=prepost)
+                if hasattr(df.columns, "levels"):
+                    df.columns = df.columns.get_level_values(0)
+                if df is not None and not df.empty and len(df) >= 5:
+                    return df
+            except Exception:
+                continue
+        return None
 
 
     def _hedge_fund_rules(df, fh_quote: dict = None) -> dict:
@@ -12603,13 +12618,20 @@ with main_tab4:
 
             # Get Finnhub quote for regular session price
             _fh_quote = _fetch_finnhub_quote(_lm_sym)
+            _lm_df_ok = True
             with st.spinner(f"Loading {_lm_sym}…"):
                 _lm_df = _fetch_live_candles(_lm_sym, _lm_interval, _lm_period)
-                if _lm_df is None:
-                    st.error(f"Could not fetch data for {_lm_sym}.")
+                if _lm_df is None or _lm_df.empty:
+                    st.error(
+                        f"No data found for **{_lm_sym}** on {_lm_interval} interval. "
+                        f"The ticker may be delisted, have no intraday data yet today, or yfinance "
+                        f"may be rate-limiting. Try a longer interval (5m / 15m) or click 🔄 Refresh."
+                    )
+                    _lm_df_ok = False
 
+            _live_candle_added = False
+            if _lm_df_ok:
                 import pandas as _pd2
-                _live_candle_added = False
 
                 # ── Option A: WebSocket live candles (best — ~1s latency) ─────────
                 if _ws_live and _lm_df is not None and not _lm_df.empty:
@@ -12786,6 +12808,75 @@ with main_tab4:
                 _tc4.metric("Fib 1.618 Target",f"{curr}{_tgt.get('fib_618',0):.2f}",
                             delta=f"+{(_tgt.get('fib_618',_cur_px)-_cur_px)/_cur_px*100:.1f}%", delta_color="normal")
 
+                # ── Today's Intraday Price Targets ───────────────────────────────
+                st.markdown("---")
+                st.markdown("### 📍 Today's Intraday Price Targets")
+                try:
+                    import pandas as _pd_id
+                    # Today's OHLC from the data
+                    _today_str = _pd_id.Timestamp.now(tz="US/Eastern").strftime("%Y-%m-%d")
+                    _today_mask = _lm_df.index.normalize() == _pd_id.Timestamp(_today_str, tz=_lm_df.index.tz) if _lm_df.index.tz else _lm_df.index.date == _pd_id.Timestamp(_today_str).date()
+                    _today_df   = _lm_df[_today_mask] if _today_mask.any() else _lm_df.tail(60)
+                    _day_open   = float(_today_df["Open"].iloc[0])  if not _today_df.empty else _cur_px
+                    _day_high   = float(_today_df["High"].max())    if not _today_df.empty else _cur_px
+                    _day_low    = float(_today_df["Low"].min())     if not _today_df.empty else _cur_px
+                    _day_range  = _day_high - _day_low
+                    # VWAP (typical price × volume / cumulative volume)
+                    _tp   = (_today_df["High"] + _today_df["Low"] + _today_df["Close"]) / 3
+                    _cvol = _today_df["Volume"].cumsum()
+                    _vwap = float((_tp * _today_df["Volume"]).cumsum().iloc[-1] / max(float(_cvol.iloc[-1]), 1)) if not _today_df.empty else _cur_px
+                    # Probable high = current high + partial ATR (market rarely exceeds 1.5× ATR from open)
+                    _atr_intra     = _atr if _atr else _day_range
+                    _probable_high = round(_day_open + min(_atr_intra * 1.5, _day_range + _atr_intra * 0.5), 2)
+                    _probable_low  = round(_day_open - min(_atr_intra * 1.5, _day_range + _atr_intra * 0.5), 2)
+                    # If price already exceeded probable high, raise it
+                    if _day_high > _probable_high:
+                        _probable_high = round(_day_high + _atr_intra * 0.3, 2)
+                    # Camarilla pivots (used by intraday traders)
+                    _prev_df   = _lm_df.tail(max(len(_lm_df) - len(_today_df), 1))
+                    _prev_high = float(_prev_df["High"].max())
+                    _prev_low  = float(_prev_df["Low"].min())
+                    _prev_close= float(_prev_df["Close"].iloc[-1])
+                    _cam_range = _prev_high - _prev_low
+                    _cam_r3 = round(_prev_close + _cam_range * 1.1 / 4, 2)
+                    _cam_r4 = round(_prev_close + _cam_range * 1.1 / 2, 2)
+                    _cam_s3 = round(_prev_close - _cam_range * 1.1 / 4, 2)
+                    _cam_s4 = round(_prev_close - _cam_range * 1.1 / 2, 2)
+                    # Classical pivot
+                    _pivot  = round((_prev_high + _prev_low + _prev_close) / 3, 2)
+
+                    _id1, _id2, _id3, _id4, _id5, _id6, _id7 = st.columns(7)
+                    _id1.metric("Day Open",        f"{curr}{_day_open:.2f}")
+                    _id2.metric("Day High (so far)",f"{curr}{_day_high:.2f}", delta=f"+{(_day_high-_day_open)/_day_open*100:.1f}%", delta_color="normal")
+                    _id3.metric("Day Low (so far)", f"{curr}{_day_low:.2f}",  delta=f"{(_day_low-_day_open)/_day_open*100:.1f}%",  delta_color="inverse")
+                    _id4.metric("VWAP",            f"{curr}{_vwap:.2f}",     delta="Above" if _cur_px > _vwap else "Below", delta_color="normal" if _cur_px > _vwap else "inverse")
+                    _id5.metric("Pivot",           f"{curr}{_pivot:.2f}")
+                    _id6.metric("Cam R3 (resist)", f"{curr}{_cam_r3:.2f}",   delta=f"+{(_cam_r3-_cur_px)/_cur_px*100:.1f}%", delta_color="off")
+                    _id7.metric("Cam S3 (support)",f"{curr}{_cam_s3:.2f}",   delta=f"{(_cam_s3-_cur_px)/_cur_px*100:.1f}%", delta_color="off")
+
+                    # Probable range box
+                    _ph_pct = (_probable_high - _cur_px) / _cur_px * 100
+                    _pl_pct = (_probable_low  - _cur_px) / _cur_px * 100
+                    _within = _probable_low <= _cur_px <= _probable_high
+                    _box_color = "#00c853" if _within else "#ff9800"
+                    st.markdown(
+                        f"<div style='background:{_box_color}18;border:1px solid {_box_color};"
+                        f"border-radius:8px;padding:12px;margin-top:8px;display:flex;gap:32px;align-items:center'>"
+                        f"<div><span style='color:#888;font-size:0.8rem'>Probable day HIGH</span><br>"
+                        f"<span style='font-size:1.4rem;font-weight:800;color:#00c853'>{curr}{_probable_high:.2f}</span>"
+                        f"<span style='color:#888;font-size:0.8rem'> ({_ph_pct:+.1f}% from now)</span></div>"
+                        f"<div style='border-left:1px solid #333;padding-left:32px'>"
+                        f"<span style='color:#888;font-size:0.8rem'>Probable day LOW</span><br>"
+                        f"<span style='font-size:1.4rem;font-weight:800;color:#ff5252'>{curr}{_probable_low:.2f}</span>"
+                        f"<span style='color:#888;font-size:0.8rem'> ({_pl_pct:+.1f}% from now)</span></div>"
+                        f"<div style='border-left:1px solid #333;padding-left:32px;font-size:0.8rem;color:#aaa'>"
+                        f"Based on ATR({_atr_intra:.2f}) + today's range. Price {'is within' if _within else 'has exceeded'} the expected range."
+                        f"</div></div>",
+                        unsafe_allow_html=True
+                    )
+                except Exception as _id_err:
+                    st.caption(f"Intraday targets unavailable: {_id_err}")
+
                 # ── Multi-Timeframe Confluence ───────────────────────────────────
                 st.markdown("---")
                 st.markdown("### 🎯 Multi-Timeframe Confluence")
@@ -12890,37 +12981,55 @@ with main_tab4:
                     _near_top_bb = _avg_bbp > 80
                     _in_profit   = (_pnl_pct is not None and _pnl_pct > 0) or (_pnl_pct is None)
 
-                    if _exit_now_count >= 2 or (_sell_votes >= 2 and _overbought):
+                    try:
+                        _above_vwap_h = _cur_px > _vwap
+                    except Exception:
+                        _above_vwap_h = True
+                    _hf_bullish_h = _hf_score > 0
+                    _near_res_h   = any(abs(_cur_px - r) / _cur_px < 0.008 for r in _res[:2]) if _res else False
+
+                    if _exit_now_count >= 2 or (_sell_votes >= 2 and _overbought) or (_near_res_h and _overbought and _macd_fading):
                         _conf_dir   = "BOOK FULL PROFIT / EXIT"
                         _conf_icon  = "🔴"
                         _conf_color = "#ff5252"
                         _reasons    = []
-                        if _exit_now_count >= 2: _reasons.append("EXIT NOW signal on multiple timeframes")
-                        if _overbought:          _reasons.append(f"avg RSI {_avg_rsi:.0f} — severely overbought")
+                        if _exit_now_count >= 2: _reasons.append(f"EXIT NOW on {_exit_now_count} timeframes")
+                        if _overbought:          _reasons.append(f"RSI {_avg_rsi:.0f} — severely overbought")
                         if _near_top_bb:         _reasons.append("price at upper Bollinger Band")
-                        _conf_msg   = "Strong exit signal across timeframes. " + " · ".join(_reasons) + ". Consider closing the full position."
+                        if _near_res_h:          _reasons.append("price at resistance ceiling")
+                        if not _above_vwap_h:    _reasons.append("price broke below VWAP")
+                        _conf_msg = "Strong exit signals. " + " · ".join(_reasons) + ". Close the full position."
 
-                    elif _sell_votes >= 2 or (_macd_fading and _near_top_bb):
+                    elif _sell_votes >= 2 or (_macd_fading and _near_top_bb) or (_near_res_h and not _hf_bullish_h):
                         _conf_dir   = "BOOK PARTIAL PROFIT"
                         _conf_icon  = "🟠"
                         _conf_color = "#ff9800"
                         _reasons    = []
-                        if _sell_votes >= 2: _reasons.append(f"{_sell_votes}/3 timeframes turning bearish")
-                        if _macd_fading:     _reasons.append("MACD momentum fading")
-                        if _near_top_bb:     _reasons.append(f"price at {_avg_bbp:.0f}% of Bollinger Band range")
-                        _conf_msg   = "Momentum is weakening. " + " · ".join(_reasons) + ". Book 30–50% and keep a trailing stop on the rest."
+                        if _sell_votes >= 2:    _reasons.append(f"{_sell_votes}/3 timeframes bearish")
+                        if _macd_fading:        _reasons.append("MACD momentum fading")
+                        if _near_top_bb:        _reasons.append(f"BB position {_avg_bbp:.0f}%")
+                        if _near_res_h:         _reasons.append("price at resistance")
+                        if not _hf_bullish_h:   _reasons.append("quant engine bearish")
+                        _conf_msg = "Momentum weakening. " + " · ".join(_reasons) + ". Book 30–50%, trail stop on rest."
 
-                    elif _buy_votes >= 2 and not _macd_fading:
+                    elif _buy_votes >= 2 and not _macd_fading and _hf_bullish_h:
                         _conf_dir   = "HOLD & RIDE"
                         _conf_icon  = "🟢"
                         _conf_color = "#00c853"
-                        _conf_msg   = f"Trend still intact ({_buy_votes}/3 timeframes bullish, MACD positive). Stay in the trade and trail your stop."
+                        _conf_msg   = (f"Strong hold: {_buy_votes}/3 timeframes bullish, MACD positive, quant engine bullish"
+                                       + (", above VWAP" if _above_vwap_h else "") + ". Trail your stop and stay in.")
+
+                    elif _buy_votes >= 2 and not _macd_fading:
+                        _conf_dir   = "HOLD"
+                        _conf_icon  = "🟢"
+                        _conf_color = "#00e676"
+                        _conf_msg   = f"Trend intact ({_buy_votes}/3 timeframes bullish). Hold position, check quant score."
 
                     else:
                         _conf_dir   = "MONITOR — No action yet"
                         _conf_icon  = "🟡"
                         _conf_color = "#aaaaaa"
-                        _conf_msg   = "Mixed signals. Trend not broken but momentum is neutral. Hold position, tighten your stop, and watch the next candle."
+                        _conf_msg   = "Mixed signals. Trend not broken but momentum is neutral. Hold, tighten stop, watch next candle."
 
                     # Build verdict box
                     _pnl_line = ""
@@ -12931,45 +13040,111 @@ with main_tab4:
                                       f"Your P&L: {_pnl_sign}{_pnl_pct:.2f}%  (bought @ {curr}{_mtf_avg_cost:.2f} · now {curr}{_cur_px:.2f})"
                                       f"</div>")
 
+                    _hold_factors = []
+                    _hold_factors.append(f"{'✅' if _buy_votes>=2 else '❌'} {_buy_votes}/3 timeframes bullish")
+                    _hold_factors.append(f"{'✅' if not _macd_fading else '❌'} MACD {'positive' if not _macd_fading else 'fading'}")
+                    _hold_factors.append(f"{'✅' if _above_vwap_h else '❌'} {'Above' if _above_vwap_h else 'Below'} VWAP")
+                    _hold_factors.append(f"{'✅' if _hf_bullish_h else '❌'} Quant engine {'bullish' if _hf_bullish_h else 'bearish'} ({_hf_score:+d})")
+                    if _near_res_h: _hold_factors.append("⚠️ Near resistance — consider trimming")
+                    if _near_top_bb: _hold_factors.append(f"⚠️ BB position {_avg_bbp:.0f}% — near top")
+                    if _overbought:  _hold_factors.append(f"⚠️ RSI {_avg_rsi:.0f} — overbought")
+
                     st.markdown(
                         f"<div style='background:{_conf_color}22;border:2px solid {_conf_color};"
-                        f"border-radius:10px;padding:16px;text-align:center;margin-top:12px'>"
+                        f"border-radius:10px;padding:16px;margin-top:12px'>"
+                        f"<div style='text-align:center'>"
                         f"<div style='font-size:0.9rem;color:#aaa;letter-spacing:0.1em'>HOLDING VERDICT</div>"
                         f"<div style='font-size:2rem;font-weight:900;color:{_conf_color}'>{_conf_icon} {_conf_dir}</div>"
                         f"<div style='font-size:0.85rem;color:#ccc;margin-top:6px'>{_conf_msg}</div>"
                         f"{_pnl_line}"
-                        f"<div style='font-size:0.75rem;color:#888;margin-top:8px'>"
-                        f"Avg RSI {_avg_rsi:.0f} · Avg MACD hist {_avg_mh:.4f} · BB position {_avg_bbp:.0f}%"
+                        f"</div>"
+                        f"<div style='margin-top:10px;display:flex;flex-wrap:wrap;gap:6px'>"
+                        + "".join(f"<span style='background:#ffffff11;border-radius:4px;padding:3px 8px;font-size:0.75rem;color:#ccc'>{f}</span>" for f in _hold_factors)
+                        + f"</div>"
+                        f"<div style='font-size:0.75rem;color:#888;margin-top:8px;text-align:center'>"
+                        f"RSI {_avg_rsi:.0f} · MACD hist {_avg_mh:.4f} · BB {_avg_bbp:.0f}%"
                         f"</div></div>",
                         unsafe_allow_html=True
                     )
 
                 else:
-                    # ── Entry mode verdict (original) ────────────────────────────
-                    if _buy_votes >= 2:
-                        _conf_dir   = "BUY"
+                    # ── Entry mode verdict — multi-dimensional ───────────────────
+                    # Extra dimensions beyond RSI/MACD: VWAP, volume, quant score, S/R proximity
+                    try:
+                        _above_vwap  = _cur_px > _vwap
+                    except Exception:
+                        _above_vwap  = True
+                    _vol_spike   = (_sig.get("vol_z") or 0) > 1.5
+                    _hf_bullish  = _hf_score > 0
+                    _near_res    = any(abs(_cur_px - r) / _cur_px < 0.005 for r in _res[:2]) if _res else False
+                    _near_sup    = any(abs(_cur_px - s) / _cur_px < 0.005 for s in _sup[:2]) if _sup else False
+
+                    # Score-based system: each positive factor adds 1
+                    _entry_score = (
+                        _buy_votes                    # 0–3: timeframe votes
+                        + (1 if _above_vwap else 0)   # above VWAP = institutional buy zone
+                        + (1 if _vol_spike else 0)     # volume confirmation
+                        + (1 if _hf_bullish else 0)    # quant rule engine agrees
+                        - (2 if _near_res else 0)      # price at resistance = bad entry
+                        + (1 if _near_sup else 0)      # price at support = good entry
+                    )
+                    _exit_score = (
+                        _sell_votes
+                        + (0 if _above_vwap else 1)    # below VWAP = bearish
+                        + (1 if _near_res else 0)
+                        + (0 if _hf_bullish else 1)
+                    )
+
+                    _signal_factors = []
+                    if _buy_votes >= 2:   _signal_factors.append(f"✅ {_buy_votes}/3 timeframes bullish")
+                    if _sell_votes >= 2:  _signal_factors.append(f"❌ {_sell_votes}/3 timeframes bearish")
+                    if _above_vwap:       _signal_factors.append("✅ Price above VWAP")
+                    else:                 _signal_factors.append("❌ Price below VWAP")
+                    if _vol_spike:        _signal_factors.append(f"✅ Volume spike ({(_sig.get('vol_z') or 0):.1f}σ)")
+                    if _hf_bullish:       _signal_factors.append(f"✅ Quant engine bullish (score {_hf_score})")
+                    else:                 _signal_factors.append(f"❌ Quant engine bearish (score {_hf_score})")
+                    if _near_res:         _signal_factors.append("⚠️ Price near resistance — risky entry")
+                    if _near_sup:         _signal_factors.append("✅ Price near support — good risk/reward")
+
+                    if _entry_score >= 4 and _buy_votes >= 2:
+                        _conf_dir   = "STRONG BUY"
                         _conf_icon  = "🟢"
                         _conf_color = "#00c853"
-                        _conf_msg   = f"Strong confluence ({_buy_votes}/3 timeframes agree) — high-probability long entry"
-                    elif _sell_votes >= 2:
-                        _conf_dir   = "SELL / SHORT"
+                        _conf_msg   = f"High-conviction entry: {_entry_score} bullish factors aligned. Volume confirmed, above VWAP, timeframes agree."
+                    elif _buy_votes >= 2 and _entry_score >= 2:
+                        _conf_dir   = "BUY"
+                        _conf_icon  = "🟢"
+                        _conf_color = "#00e676"
+                        _conf_msg   = f"Good setup: {_buy_votes}/3 timeframes bullish. Enter with a tight stop at session low or nearest support."
+                    elif _exit_score >= 4 or _sell_votes >= 2:
+                        _conf_dir   = "AVOID / EXIT"
                         _conf_icon  = "🔴"
                         _conf_color = "#ff5252"
-                        _conf_msg   = f"Strong confluence ({_sell_votes}/3 timeframes agree) — avoid new longs"
+                        _conf_msg   = f"Bearish confluence. {_sell_votes}/3 timeframes bearish. Do not enter long — if already in, consider exiting."
+                    elif _near_res and _buy_votes >= 2:
+                        _conf_dir   = "WAIT FOR BREAKOUT"
+                        _conf_icon  = "🟡"
+                        _conf_color = "#ffab40"
+                        _conf_msg   = "Bullish signals present but price is at resistance. Wait for a confirmed breakout above resistance before entering."
                     else:
                         _conf_dir   = "WAIT"
                         _conf_icon  = "🟡"
                         _conf_color = "#ff9800"
-                        _conf_msg   = "Timeframes are mixed — no high-confidence entry right now. Stay out."
+                        _conf_msg   = "No high-confidence setup right now. Timeframes mixed or insufficient confirmation. Stay in cash."
 
                     st.markdown(
                         f"<div style='background:{_conf_color}22;border:2px solid {_conf_color};"
-                        f"border-radius:10px;padding:16px;text-align:center;margin-top:12px'>"
+                        f"border-radius:10px;padding:16px;margin-top:12px'>"
+                        f"<div style='text-align:center'>"
                         f"<div style='font-size:0.9rem;color:#aaa;letter-spacing:0.1em'>CONFLUENCE VERDICT</div>"
-                        f"<div style='font-size:2.4rem;font-weight:900;color:{_conf_color}'>{_conf_icon} {_conf_dir}</div>"
+                        f"<div style='font-size:2.2rem;font-weight:900;color:{_conf_color}'>{_conf_icon} {_conf_dir}</div>"
                         f"<div style='font-size:0.85rem;color:#ccc;margin-top:4px'>{_conf_msg}</div>"
-                        f"<div style='font-size:0.75rem;color:#888;margin-top:8px'>"
-                        f"BUY: {_buy_votes}/3 · SELL: {_sell_votes}/3 · NEUTRAL: {_mtf_results.count('NEUTRAL')}/3"
+                        f"</div>"
+                        f"<div style='margin-top:12px;display:flex;flex-wrap:wrap;gap:6px'>"
+                        + "".join(f"<span style='background:#ffffff11;border-radius:4px;padding:3px 8px;font-size:0.75rem;color:#ccc'>{f}</span>" for f in _signal_factors)
+                        + f"</div>"
+                        f"<div style='font-size:0.75rem;color:#888;margin-top:8px;text-align:center'>"
+                        f"Entry score: {_entry_score} · BUY: {_buy_votes}/3 · SELL: {_sell_votes}/3"
                         f"</div></div>",
                         unsafe_allow_html=True
                     )
