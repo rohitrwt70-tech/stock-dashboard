@@ -249,9 +249,166 @@ def search_stocks(query: str):
         return []
 
 
+@st.cache_data(ttl=86400)
+def get_us_universe():
+    # Primary: SEC EDGAR — all ~10k US-listed companies, no API key needed
+    try:
+        r = requests.get(
+            "https://www.sec.gov/files/company_tickers.json",
+            headers={"User-Agent": "StockDashboard rohitrwt70@gmail.com"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            tickers = sorted({v["ticker"] for v in data.values() if v.get("ticker")})
+            if len(tickers) > 1000:
+                return tickers
+    except Exception:
+        pass
+
+    # Fallback: S&P 500 core
+    sp500 = []
+    try:
+        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
+        sp500_df = pd.read_csv(url, timeout=8)
+        sp500 = sp500_df["Symbol"].tolist()
+    except Exception:
+        pass
+
+    # Comprehensive US ticker list: S&P 500, Nasdaq 100, Russell 1000 leaders,
+    # popular mid/small caps, sector ETFs, and recent spinoffs/IPOs
+    builtin = [
+        # Mega cap tech
+        "AAPL","MSFT","NVDA","GOOGL","GOOG","AMZN","META","TSLA","AVGO","ORCL",
+        "CRM","ADBE","QCOM","AMD","INTC","TXN","MU","KLAC","LRCX","AMAT",
+        "ASML","TSM","SNPS","CDNS","ANSS","PTC","ANSYS","FTNT","ZBRA","FFIV",
+        # Semiconductors
+        "NVDA","AMD","INTC","QCOM","TXN","MU","KLAC","LRCX","AMAT","MRVL",
+        "MPWR","ON","SWKS","QRVO","WOLF","AMBA","CRUS","SLAB","DIOD","POWI",
+        "SIMO","FORM","ACLS","COHU","ICHR","MKSI","UCTT","AXTI","AOSL","RMBS",
+        "SNDK","WDC","STX","NTAP","PSTG","DELL","HPE","HPQ","NCR","CDW",
+        # Storage & hardware
+        "SNDK","WDC","STX","NTAP","PSTG","DELL","HPE","HPQ","IBM","EMC",
+        # Financials
+        "JPM","BAC","WFC","GS","MS","C","BLK","AXP","V","MA",
+        "COF","DFS","SYF","ALLY","LC","SOFI","HOOD","COIN","MSTR","PYPL",
+        "SQ","AFRM","UPST","OPEN","OPFI","ENOVA","QFIN","FUTU","TIGR","LU",
+        "ICE","CME","NDAQ","CBOE","MKTX","LPLA","RJF","SF","STIFEL","PIPR",
+        "BRK-B","BRK-A","MET","PRU","LNC","UNM","AFL","GL","PFG","VOYA",
+        "AIG","ALL","PGR","TRV","CB","HIG","CNA","WRB","CINF","MKL",
+        # Healthcare & Biotech
+        "UNH","JNJ","LLY","ABBV","MRK","PFE","BMY","AMGN","GILD","BIIB",
+        "REGN","VRTX","MRNA","BNTX","NVAX","SGEN","ALNY","IONS","SRPT","RARE",
+        "BLUE","EDIT","CRSP","BEAM","NTLA","FATE","PACB","RXRX","AGEN","IMMU",
+        "TMO","DHR","A","BIO","ILMN","HOLX","BAX","BDX","COO","HSIC",
+        "MDT","BSX","EW","SYK","ZBH","ABMD","ISRG","DXCM","IDXX","PODD",
+        "HCA","THC","UHS","CYH","ENSG","NHC","ACAD","JAZZ","INCY","EXEL",
+        "CVS","WBA","RAD","CANO","OSCR","ACMR","ACHC","HUM","ELV","CNC",
+        # Consumer
+        "AMZN","WMT","COST","TGT","HD","LOW","TJX","ROST","BURL","OLLI",
+        "NKE","LULU","UA","UAA","SKX","CROX","DECK","BOOT","ONON","HBI",
+        "MCD","SBUX","YUM","QSR","DPZ","PZZA","WING","SHAK","TXRH","DINE",
+        "PG","KO","PEP","MDLZ","GIS","K","CAG","CPB","MKC","SJM",
+        "CL","CHD","ELF","ULTA","COTY","REVG","IPAR","EL","SBH","PRGO",
+        "GM","F","STLA","TM","HMC","NIO","XPEV","LI","RIVN","LCID",
+        "TSLA","FSR","NKLA","WKHS","RIDE","GOEV","SOLO","AYRO","HYLN","CEV",
+        # Energy
+        "XOM","CVX","COP","EOG","PXD","DVN","FANG","MRO","APA","HES",
+        "SLB","HAL","BKR","FTI","NOV","RIG","VAL","NE","DO","OIS",
+        "PSX","VLO","MPC","PBF","HFC","DKL","CVRR","PARR","CLMT","CAPL",
+        "OKE","WMB","KMI","ET","EPD","MMP","MPLX","PAA","SHLX","NS",
+        "LNG","TELL","NEXT","GLNG","GMLP","COOL","AR","RRC","SWN","CNX",
+        # Industrials
+        "CAT","DE","EMR","HON","GE","RTX","LMT","NOC","GD","BA",
+        "HII","TDG","HEI","AXON","LDOS","SAIC","BAH","CACI","PAE","KTOS",
+        "UPS","FDX","XPO","CHRW","EXPD","JBHT","LSTR","ODFL","SAIA","WERN",
+        "CSX","NSC","UNP","CP","CNI","KSU","GATX","RAIL","TRN","GBX",
+        "MMM","ITW","PH","ROK","AME","FTV","ROP","IEX","FLOW","XYL",
+        "GNRC","REXNORD","WTS","WATTS","FELE","AAON","AIRC","AWI","APOG","TREX",
+        # REITs
+        "AMT","PLD","EQIX","CCI","DLR","PSA","EXR","CUBE","LSI","NSA",
+        "SPG","O","NNN","ADC","STOR","EPRT","GTY","AGREE","NETSTREIT","PINE",
+        "EQR","AVB","ESS","MAA","CPT","UDR","NVR","DHI","LEN","PHM",
+        "TOL","MDC","TMHC","KBH","MHO","SGH","BZH","HOV","WLH","LGIH",
+        # Utilities
+        "NEE","DUK","SO","D","AEP","EXC","XEL","ES","WEC","ETR",
+        "PPL","FE","CNP","AES","NRG","PNW","POR","CLNE","BE","FCEL",
+        # Materials
+        "LIN","APD","DD","EMN","PPG","SHW","RPM","AXTA","HXL","KWR",
+        "NEM","GOLD","AEM","KGC","HL","PAAS","AG","CDE","EXK","SILV",
+        "FCX","TECK","AA","CENX","KALU","ARNC","ATI","HWM","MTRN","MXCY",
+        "NUE","STLD","CLF","CMC","RS","WOR","ZEUS","HZNP","TS","GGB",
+        # Cloud & SaaS
+        "SNOW","MDB","DDOG","NET","HUBS","ZS","OKTA","CRWD","S","PANW",
+        "SMAR","COUP","PLAN","PCTY","PAYC","WK","APPN","PEGA","BPTH","FROG",
+        "TWLO","ZI","BILL","MNTV","BRZE","AMPL","SPRK","RDVT","WEAV","CFLT",
+        "GTLB","SDLP","ESTC","SUMO","NEWR","DT","FSLY","FIVN","NICE","NICE",
+        "NOW","WDAY","VEEV","INTU","ADSK","ANSS","PTC","MANH","EPAM","GLOB",
+        # Cybersecurity
+        "CRWD","PANW","FTNT","ZS","OKTA","S","TENB","RPD","VRNT","QLYS",
+        "CYBR","SAIL","SSTK","CSCO","CHKP","PFPT","MIME","OSPN","EVBG","SCWX",
+        # Digital media & streaming
+        "NFLX","DIS","PARA","WBD","CMCSA","FOX","FOXA","AMCX","LGF-A","LGF-B",
+        "SPOT","IHRT","SIRI","LSXMA","LSXMB","LSXMK","FWONA","FWONK","BATRK","BATRA",
+        "RBLX","U","EA","TTWO","ATVI","NTDOY","GME","GAMB","DKNG","PENN",
+        # E-commerce & marketplace
+        "AMZN","SHOP","EBAY","ETSY","WISH","POSH","REAL","RENT","RDFN","OPEN",
+        "ABNB","BKNG","EXPE","TRIP","LIND","VCNX","YELP","ANGI","IAC","MTCH",
+        # EV & clean energy
+        "TSLA","RIVN","LCID","NIO","XPEV","LI","NKLA","RIDE","GOEV","WKHS",
+        "ENPH","SEDG","FSLR","RUN","NOVA","ARRY","SPWR","NEP","BEPC","CWEN",
+        "BLNK","EVGO","CHPT","SBE","HYLN","SOLO","AYRO","KNDI","IDEX","WORX",
+        "PLUG","FCEL","BLOOM","BE","BLDP","ITM","NEL","HTOO","HPNN","HYSR",
+        # Space & defense tech
+        "RKLB","ASTS","ASTR","SPIR","MNTS","KTOS","MAXR","DigitalBridge","SATL","OSAT",
+        "LMT","NOC","RTX","GD","BA","HII","TDG","HEI","LDOS","SAIC",
+        "AXON","OSIS","VSE","DRS","CACI","BAH","KEYW","MANT","FLIR","DRS",
+        # AI & machine learning
+        "NVDA","AMD","INTC","GOOGL","MSFT","META","AMZN","IBM","PLTR","AI",
+        "BBAI","SOUN","GFAI","DTCK","NABL","EXAI","AEYE","OPAD","BDAI","AIOT",
+        "SMCI","DELL","HPE","NTAP","PSTG","NTNX","PYCR","NCNO","RDWR","CEVA",
+        # Biotech & genomics
+        "ILMN","PACB","RXRX","SEER","OMIC","NVTA","GNMK","FLGT","EXAS","NTRA",
+        "GH","CDNA","VCNX","FATE","BLUE","CRSP","EDIT","BEAM","NTLA","ALNY",
+        "IONS","SRPT","RARE","ACAD","JAZZ","INCY","EXEL","HALO","MRUS","ARQT",
+        # Finance & fintech
+        "PYPL","SQ","AFRM","UPST","SOFI","HOOD","COIN","MSTR","LC","OPEN",
+        "OPFI","ENOVA","DAVE","MQ","PAYO","DH","FLYW","PLTK","IIIV","RPAY",
+        "NRDS","PRFT","GTPAY","RELY","GREE","CURO","WRLD","EZCORP","FCFS","QCR",
+        # Recent IPOs & spinoffs (2023-2025)
+        "SNDK","ARM","BIRK","CART","KVYO","CLBT","IREN","MARA","RIOT","HUT",
+        "BTDR","CIFR","CORZ","WULF","BTBT","SDIG","HIVE","DGHI","POWI","POWL",
+        "APP","APGE","ALAB","ACHR","JOBY","LILM","EVE","BLDE","BETA","SKYH",
+        "IONQ","QUBT","RGTI","QBTS","IQM","ARQQ","CNXT","SPAC","PSFE","GREE",
+        # Consumer tech & devices
+        "AAPL","MSFT","GOOGL","AMZN","META","SNAP","PINS","TWTR","RDDT","MTCH",
+        "ZM","DOCU","DOCN","BOX","DRPBX","WORK","TEAM","ATLS","FROG","CFLT",
+        "SONO","HEAR","KOSS","GPRO","ROKU","VUZI","IMMR","MKSI","UEIC","SMTC",
+        # Retail & restaurants
+        "COST","WMT","TGT","KR","SFM","WINN","CHEF","GO","UNFI","SPTN",
+        "MCD","SBUX","YUM","QSR","DPZ","PZZA","WING","SHAK","TXRH","FAT",
+        "CHUY","BJRI","DINE","EAT","DRI","CAKE","BLMN","RUTH","FWRG","ARCO",
+        "LULU","NKE","UA","SKX","CROX","DECK","BOOT","ONON","CURV","WHLM",
+        # Telecoms & infrastructure
+        "T","VZ","TMUS","LUMN","FYBR","CCOI","SHEN","ATNI","OOMA","BAND",
+        "AMT","CCI","SBAC","SBA","UNIT","UNITI","ATUS","CABO","LBRDA","CHTR",
+        "DISH","SATS","VSAT","GSAT","ORBC","GILT","IRDM","MAXR","SPOK","NTGR",
+        # Misc popular tickers
+        "GME","AMC","BB","BBBY","KOSS","EXPR","CLOV","WKHS","RIDE","NKLA",
+        "WISH","CLOV","MVIS","OCGN","ATOS","HIMS","BODY","FATH","OWLET","BARK",
+        "SPCE","RKT","UWMC","GHVI","PSTH","AJAX","COVA","GS","IPOF","FTIV",
+    ]
+
+    all_tickers = list(dict.fromkeys(sp500 + builtin))
+    # Clean up any non-string or empty entries
+    return [t for t in all_tickers if isinstance(t, str) and t.strip()]
+
+
+# ── Live VIX ──────────────────────────────────────────────────────────────────
+
 with st.sidebar:
     _india_fallback = ["RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS","SBIN.NS","BHARTIARTL.NS","ITC.NS","LT.NS","KOTAKBANK.NS","AXISBANK.NS","WIPRO.NS","HCLTECH.NS","SUNPHARMA.NS","MARUTI.NS","TITAN.NS","BAJFINANCE.NS","NTPC.NS","POWERGRID.NS","TATAMOTORS.NS","TATASTEEL.NS","ADANIPORTS.NS","ONGC.NS","COALINDIA.NS","DRREDDY.NS","CIPLA.NS","ZOMATO.NS","IRCTC.NS","HAL.NS","BEL.NS","TATAPOWER.NS","POLYCAB.NS","HAVELLS.NS","PERSISTENT.NS","COFORGE.NS","MPHASIS.NS","LTIM.NS"]
-    _us_fallback = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","JPM","V","MA","UNH","XOM","LLY","AVGO","JNJ","PG","HD","MRK","ABBV","COST","CVX","CRM","BAC","AMD","PEP","NFLX","KO","WMT","CSCO","MCD","ORCL","CAT","TXN","ADBE","QCOM","GS","AMGN","MS","INTU","BKNG","SNDK","PLTR","COIN","SOFI","HOOD","RIVN","SNOW","DDOG","NET","CRWD","PANW","NOW","WDAY","SHOP","RKLB","IONQ","ARM","APP","SMCI","DELL","SERV","UBER","LYFT","ABNB","DASH","RDDT","PINS","SNAP"]
+    _us_fallback = get_us_universe() if "🇺🇸" in market_label else []
     _sidebar_tickers = _us_fallback if "🇺🇸" in market_label else _india_fallback
     raw = st.selectbox(
         "Search Stock",
@@ -467,162 +624,6 @@ def get_india_universe():
     return INDIA_UNIVERSE
 
 
-@st.cache_data(ttl=86400)
-def get_us_universe():
-    # Primary: SEC EDGAR — all ~10k US-listed companies, no API key needed
-    try:
-        r = requests.get(
-            "https://www.sec.gov/files/company_tickers.json",
-            headers={"User-Agent": "StockDashboard rohitrwt70@gmail.com"},
-            timeout=10,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            tickers = sorted({v["ticker"] for v in data.values() if v.get("ticker")})
-            if len(tickers) > 1000:
-                return tickers
-    except Exception:
-        pass
-
-    # Fallback: S&P 500 core
-    sp500 = []
-    try:
-        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
-        sp500_df = pd.read_csv(url, timeout=8)
-        sp500 = sp500_df["Symbol"].tolist()
-    except Exception:
-        pass
-
-    # Comprehensive US ticker list: S&P 500, Nasdaq 100, Russell 1000 leaders,
-    # popular mid/small caps, sector ETFs, and recent spinoffs/IPOs
-    builtin = [
-        # Mega cap tech
-        "AAPL","MSFT","NVDA","GOOGL","GOOG","AMZN","META","TSLA","AVGO","ORCL",
-        "CRM","ADBE","QCOM","AMD","INTC","TXN","MU","KLAC","LRCX","AMAT",
-        "ASML","TSM","SNPS","CDNS","ANSS","PTC","ANSYS","FTNT","ZBRA","FFIV",
-        # Semiconductors
-        "NVDA","AMD","INTC","QCOM","TXN","MU","KLAC","LRCX","AMAT","MRVL",
-        "MPWR","ON","SWKS","QRVO","WOLF","AMBA","CRUS","SLAB","DIOD","POWI",
-        "SIMO","FORM","ACLS","COHU","ICHR","MKSI","UCTT","AXTI","AOSL","RMBS",
-        "SNDK","WDC","STX","NTAP","PSTG","DELL","HPE","HPQ","NCR","CDW",
-        # Storage & hardware
-        "SNDK","WDC","STX","NTAP","PSTG","DELL","HPE","HPQ","IBM","EMC",
-        # Financials
-        "JPM","BAC","WFC","GS","MS","C","BLK","AXP","V","MA",
-        "COF","DFS","SYF","ALLY","LC","SOFI","HOOD","COIN","MSTR","PYPL",
-        "SQ","AFRM","UPST","OPEN","OPFI","ENOVA","QFIN","FUTU","TIGR","LU",
-        "ICE","CME","NDAQ","CBOE","MKTX","LPLA","RJF","SF","STIFEL","PIPR",
-        "BRK-B","BRK-A","MET","PRU","LNC","UNM","AFL","GL","PFG","VOYA",
-        "AIG","ALL","PGR","TRV","CB","HIG","CNA","WRB","CINF","MKL",
-        # Healthcare & Biotech
-        "UNH","JNJ","LLY","ABBV","MRK","PFE","BMY","AMGN","GILD","BIIB",
-        "REGN","VRTX","MRNA","BNTX","NVAX","SGEN","ALNY","IONS","SRPT","RARE",
-        "BLUE","EDIT","CRSP","BEAM","NTLA","FATE","PACB","RXRX","AGEN","IMMU",
-        "TMO","DHR","A","BIO","ILMN","HOLX","BAX","BDX","COO","HSIC",
-        "MDT","BSX","EW","SYK","ZBH","ABMD","ISRG","DXCM","IDXX","PODD",
-        "HCA","THC","UHS","CYH","ENSG","NHC","ACAD","JAZZ","INCY","EXEL",
-        "CVS","WBA","RAD","CANO","OSCR","ACMR","ACHC","HUM","ELV","CNC",
-        # Consumer
-        "AMZN","WMT","COST","TGT","HD","LOW","TJX","ROST","BURL","OLLI",
-        "NKE","LULU","UA","UAA","SKX","CROX","DECK","BOOT","ONON","HBI",
-        "MCD","SBUX","YUM","QSR","DPZ","PZZA","WING","SHAK","TXRH","DINE",
-        "PG","KO","PEP","MDLZ","GIS","K","CAG","CPB","MKC","SJM",
-        "CL","CHD","ELF","ULTA","COTY","REVG","IPAR","EL","SBH","PRGO",
-        "GM","F","STLA","TM","HMC","NIO","XPEV","LI","RIVN","LCID",
-        "TSLA","FSR","NKLA","WKHS","RIDE","GOEV","SOLO","AYRO","HYLN","CEV",
-        # Energy
-        "XOM","CVX","COP","EOG","PXD","DVN","FANG","MRO","APA","HES",
-        "SLB","HAL","BKR","FTI","NOV","RIG","VAL","NE","DO","OIS",
-        "PSX","VLO","MPC","PBF","HFC","DKL","CVRR","PARR","CLMT","CAPL",
-        "OKE","WMB","KMI","ET","EPD","MMP","MPLX","PAA","SHLX","NS",
-        "LNG","TELL","NEXT","GLNG","GMLP","COOL","AR","RRC","SWN","CNX",
-        # Industrials
-        "CAT","DE","EMR","HON","GE","RTX","LMT","NOC","GD","BA",
-        "HII","TDG","HEI","AXON","LDOS","SAIC","BAH","CACI","PAE","KTOS",
-        "UPS","FDX","XPO","CHRW","EXPD","JBHT","LSTR","ODFL","SAIA","WERN",
-        "CSX","NSC","UNP","CP","CNI","KSU","GATX","RAIL","TRN","GBX",
-        "MMM","ITW","PH","ROK","AME","FTV","ROP","IEX","FLOW","XYL",
-        "GNRC","REXNORD","WTS","WATTS","FELE","AAON","AIRC","AWI","APOG","TREX",
-        # REITs
-        "AMT","PLD","EQIX","CCI","DLR","PSA","EXR","CUBE","LSI","NSA",
-        "SPG","O","NNN","ADC","STOR","EPRT","GTY","AGREE","NETSTREIT","PINE",
-        "EQR","AVB","ESS","MAA","CPT","UDR","NVR","DHI","LEN","PHM",
-        "TOL","MDC","TMHC","KBH","MHO","SGH","BZH","HOV","WLH","LGIH",
-        # Utilities
-        "NEE","DUK","SO","D","AEP","EXC","XEL","ES","WEC","ETR",
-        "PPL","FE","CNP","AES","NRG","PNW","POR","CLNE","BE","FCEL",
-        # Materials
-        "LIN","APD","DD","EMN","PPG","SHW","RPM","AXTA","HXL","KWR",
-        "NEM","GOLD","AEM","KGC","HL","PAAS","AG","CDE","EXK","SILV",
-        "FCX","TECK","AA","CENX","KALU","ARNC","ATI","HWM","MTRN","MXCY",
-        "NUE","STLD","CLF","CMC","RS","WOR","ZEUS","HZNP","TS","GGB",
-        # Cloud & SaaS
-        "SNOW","MDB","DDOG","NET","HUBS","ZS","OKTA","CRWD","S","PANW",
-        "SMAR","COUP","PLAN","PCTY","PAYC","WK","APPN","PEGA","BPTH","FROG",
-        "TWLO","ZI","BILL","MNTV","BRZE","AMPL","SPRK","RDVT","WEAV","CFLT",
-        "GTLB","SDLP","ESTC","SUMO","NEWR","DT","FSLY","FIVN","NICE","NICE",
-        "NOW","WDAY","VEEV","INTU","ADSK","ANSS","PTC","MANH","EPAM","GLOB",
-        # Cybersecurity
-        "CRWD","PANW","FTNT","ZS","OKTA","S","TENB","RPD","VRNT","QLYS",
-        "CYBR","SAIL","SSTK","CSCO","CHKP","PFPT","MIME","OSPN","EVBG","SCWX",
-        # Digital media & streaming
-        "NFLX","DIS","PARA","WBD","CMCSA","FOX","FOXA","AMCX","LGF-A","LGF-B",
-        "SPOT","IHRT","SIRI","LSXMA","LSXMB","LSXMK","FWONA","FWONK","BATRK","BATRA",
-        "RBLX","U","EA","TTWO","ATVI","NTDOY","GME","GAMB","DKNG","PENN",
-        # E-commerce & marketplace
-        "AMZN","SHOP","EBAY","ETSY","WISH","POSH","REAL","RENT","RDFN","OPEN",
-        "ABNB","BKNG","EXPE","TRIP","LIND","VCNX","YELP","ANGI","IAC","MTCH",
-        # EV & clean energy
-        "TSLA","RIVN","LCID","NIO","XPEV","LI","NKLA","RIDE","GOEV","WKHS",
-        "ENPH","SEDG","FSLR","RUN","NOVA","ARRY","SPWR","NEP","BEPC","CWEN",
-        "BLNK","EVGO","CHPT","SBE","HYLN","SOLO","AYRO","KNDI","IDEX","WORX",
-        "PLUG","FCEL","BLOOM","BE","BLDP","ITM","NEL","HTOO","HPNN","HYSR",
-        # Space & defense tech
-        "RKLB","ASTS","ASTR","SPIR","MNTS","KTOS","MAXR","DigitalBridge","SATL","OSAT",
-        "LMT","NOC","RTX","GD","BA","HII","TDG","HEI","LDOS","SAIC",
-        "AXON","OSIS","VSE","DRS","CACI","BAH","KEYW","MANT","FLIR","DRS",
-        # AI & machine learning
-        "NVDA","AMD","INTC","GOOGL","MSFT","META","AMZN","IBM","PLTR","AI",
-        "BBAI","SOUN","GFAI","DTCK","NABL","EXAI","AEYE","OPAD","BDAI","AIOT",
-        "SMCI","DELL","HPE","NTAP","PSTG","NTNX","PYCR","NCNO","RDWR","CEVA",
-        # Biotech & genomics
-        "ILMN","PACB","RXRX","SEER","OMIC","NVTA","GNMK","FLGT","EXAS","NTRA",
-        "GH","CDNA","VCNX","FATE","BLUE","CRSP","EDIT","BEAM","NTLA","ALNY",
-        "IONS","SRPT","RARE","ACAD","JAZZ","INCY","EXEL","HALO","MRUS","ARQT",
-        # Finance & fintech
-        "PYPL","SQ","AFRM","UPST","SOFI","HOOD","COIN","MSTR","LC","OPEN",
-        "OPFI","ENOVA","DAVE","MQ","PAYO","DH","FLYW","PLTK","IIIV","RPAY",
-        "NRDS","PRFT","GTPAY","RELY","GREE","CURO","WRLD","EZCORP","FCFS","QCR",
-        # Recent IPOs & spinoffs (2023-2025)
-        "SNDK","ARM","BIRK","CART","KVYO","CLBT","IREN","MARA","RIOT","HUT",
-        "BTDR","CIFR","CORZ","WULF","BTBT","SDIG","HIVE","DGHI","POWI","POWL",
-        "APP","APGE","ALAB","ACHR","JOBY","LILM","EVE","BLDE","BETA","SKYH",
-        "IONQ","QUBT","RGTI","QBTS","IQM","ARQQ","CNXT","SPAC","PSFE","GREE",
-        # Consumer tech & devices
-        "AAPL","MSFT","GOOGL","AMZN","META","SNAP","PINS","TWTR","RDDT","MTCH",
-        "ZM","DOCU","DOCN","BOX","DRPBX","WORK","TEAM","ATLS","FROG","CFLT",
-        "SONO","HEAR","KOSS","GPRO","ROKU","VUZI","IMMR","MKSI","UEIC","SMTC",
-        # Retail & restaurants
-        "COST","WMT","TGT","KR","SFM","WINN","CHEF","GO","UNFI","SPTN",
-        "MCD","SBUX","YUM","QSR","DPZ","PZZA","WING","SHAK","TXRH","FAT",
-        "CHUY","BJRI","DINE","EAT","DRI","CAKE","BLMN","RUTH","FWRG","ARCO",
-        "LULU","NKE","UA","SKX","CROX","DECK","BOOT","ONON","CURV","WHLM",
-        # Telecoms & infrastructure
-        "T","VZ","TMUS","LUMN","FYBR","CCOI","SHEN","ATNI","OOMA","BAND",
-        "AMT","CCI","SBAC","SBA","UNIT","UNITI","ATUS","CABO","LBRDA","CHTR",
-        "DISH","SATS","VSAT","GSAT","ORBC","GILT","IRDM","MAXR","SPOK","NTGR",
-        # Misc popular tickers
-        "GME","AMC","BB","BBBY","KOSS","EXPR","CLOV","WKHS","RIDE","NKLA",
-        "WISH","CLOV","MVIS","OCGN","ATOS","HIMS","BODY","FATH","OWLET","BARK",
-        "SPCE","RKT","UWMC","GHVI","PSTH","AJAX","COVA","GS","IPOF","FTIV",
-    ]
-
-    all_tickers = list(dict.fromkeys(sp500 + builtin))
-    # Clean up any non-string or empty entries
-    return [t for t in all_tickers if isinstance(t, str) and t.strip()]
-
-
-# ── Live VIX ──────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=900)
 def get_live_vix():
     try:
