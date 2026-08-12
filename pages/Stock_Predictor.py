@@ -404,6 +404,153 @@ def get_us_universe():
     return [t for t in all_tickers if isinstance(t, str) and t.strip()]
 
 
+# ── INDmoney OAuth helpers ────────────────────────────────────────────────────
+
+def _indmoney_token_load():
+    if INDMONEY_TOKEN_FILE.exists():
+        try:
+            return json.loads(INDMONEY_TOKEN_FILE.read_text())
+        except Exception:
+            pass
+    return None
+
+def _indmoney_token_save(token_data):
+    try:
+        INDMONEY_TOKEN_FILE.write_text(json.dumps(token_data, indent=2))
+    except Exception:
+        pass
+
+def _indmoney_token_clear():
+    try:
+        INDMONEY_TOKEN_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def _indmoney_exchange_code(code, code_verifier):
+    """Exchange auth code for access token."""
+    client_id     = os.getenv("INDMONEY_CLIENT_ID", "")
+    client_secret = os.getenv("INDMONEY_CLIENT_SECRET", "")
+    redirect_uri  = os.getenv("INDMONEY_REDIRECT_URI", "")
+    try:
+        resp = requests.post(
+            "https://mcp.indmoney.com/token",
+            data={
+                "grant_type":    "authorization_code",
+                "code":          code,
+                "redirect_uri":  redirect_uri,
+                "client_id":     client_id,
+                "client_secret": client_secret,
+                "code_verifier": code_verifier,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            tok = resp.json()
+            tok["saved_at"] = str(datetime.datetime.now())
+            _indmoney_token_save(tok)
+            return tok, None
+        return None, f"Token exchange failed: {resp.status_code} {resp.text}"
+    except Exception as e:
+        return None, str(e)
+
+def _indmoney_refresh_token(refresh_tok):
+    """Refresh an expired access token."""
+    client_id     = os.getenv("INDMONEY_CLIENT_ID", "")
+    client_secret = os.getenv("INDMONEY_CLIENT_SECRET", "")
+    try:
+        resp = requests.post(
+            "https://mcp.indmoney.com/token",
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": refresh_tok,
+                "client_id":     client_id,
+                "client_secret": client_secret,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            tok = resp.json()
+            tok["saved_at"] = str(datetime.datetime.now())
+            _indmoney_token_save(tok)
+            return tok, None
+        return None, f"Refresh failed: {resp.status_code} {resp.text}"
+    except Exception as e:
+        return None, str(e)
+
+def _indmoney_mcp_call(access_token, method, params=None):
+    """Call an MCP tool on the INDmoney server."""
+    try:
+        payload = {
+            "jsonrpc": "2.0",
+            "method":  method,
+            "params":  params or {},
+            "id":      1,
+        }
+        resp = requests.post(
+            "https://mcp.indmoney.com/mcp",
+            json=payload,
+            headers={"Authorization": f"Bearer {access_token}",
+                     "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json(), None
+        return None, f"MCP call failed: {resp.status_code} {resp.text[:200]}"
+    except Exception as e:
+        return None, str(e)
+
+def _indmoney_fetch_portfolio(access_token):
+    """Fetch portfolio holdings via MCP tools/call."""
+    result, err = _indmoney_mcp_call(access_token, "tools/call",
+                                      {"name": "get_portfolio", "arguments": {}})
+    if err:
+        # Try alternate tool name patterns
+        result, err = _indmoney_mcp_call(access_token, "tools/call",
+                                          {"name": "getPortfolio", "arguments": {}})
+    return result, err
+
+def _indmoney_list_tools(access_token):
+    """Discover available MCP tools."""
+    return _indmoney_mcp_call(access_token, "tools/list")
+
+def _indmoney_build_auth_url():
+    """Build the OAuth authorization URL with PKCE."""
+    import base64, hashlib, secrets as _sec
+    client_id    = os.getenv("INDMONEY_CLIENT_ID", "")
+    redirect_uri = os.getenv("INDMONEY_REDIRECT_URI", "")
+    # PKCE
+    verifier  = _sec.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    # Store verifier in session so callback can use it
+    st.session_state["indmoney_pkce_verifier"] = verifier
+    params = (
+        f"response_type=code"
+        f"&client_id={client_id}"
+        f"&redirect_uri={requests.utils.quote(redirect_uri, safe='')}"
+        f"&scope=portfolio%3Aread%20market%3Aread"
+        f"&code_challenge={challenge}"
+        f"&code_challenge_method=S256"
+        f"&state=stockdashboard"
+    )
+    return f"https://mcp.indmoney.com/authorize?{params}", verifier
+
+# ── Handle OAuth callback (INDmoney redirects here with ?code=...) ─────────
+_qp = st.query_params
+if "code" in _qp and _qp.get("state") == "stockdashboard":
+    _auth_code    = _qp["code"]
+    _pkce_verifier = st.session_state.get("indmoney_pkce_verifier", "")
+    _tok, _tok_err = _indmoney_exchange_code(_auth_code, _pkce_verifier)
+    if _tok:
+        st.session_state["indmoney_connected"] = True
+        st.query_params.clear()
+        st.success("✅ INDmoney connected successfully!")
+        st.rerun()
+    else:
+        st.error(f"INDmoney auth failed: {_tok_err}")
+        st.query_params.clear()
+
 # ── Live VIX ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -460,9 +607,10 @@ def load_price_data(sym):
 MODEL_DIR        = Path("./screener_models")
 PREDICTIONS_FILE = Path("./screener_predictions.json")
 UNIVERSE_CACHE   = Path("./screener_universe_cache.json")
-WATCHLIST_FILE   = Path("./watchlist.json")
-PORTFOLIO_FILE   = Path("./portfolio_holdings.json")
-HUB_FILE         = Path("./my_stocks_hub.json")
+WATCHLIST_FILE      = Path("./watchlist.json")
+PORTFOLIO_FILE      = Path("./portfolio_holdings.json")
+HUB_FILE            = Path("./my_stocks_hub.json")
+INDMONEY_TOKEN_FILE = Path("./indmoney_token.json")
 PAPER_TRADES_FILE = Path("./paper_trades.json")
 PRICE_HISTORY_FILE = Path("./price_history.json")
 VALIDATION_LOG_FILE = Path("./validation_log.json")
@@ -14260,10 +14408,133 @@ with main_tab7:
 
     st.markdown("## 🗂️ My Stocks Hub")
     st.caption(
-        "Upload your portfolio/watchlist from INDmoney, Screener.in, or any PDF research report. "
+        "Connect INDmoney live, or upload your portfolio/watchlist from CSV/Excel/PDF. "
         "Review the fetched stocks, then hit **Run Analysis** to get top picks for tomorrow."
     )
 
+    # ── INDmoney Live Connection ─────────────────────────────────────────────
+    st.markdown("### 🔗 INDmoney Live Sync")
+    _ind_tok = _indmoney_token_load()
+    _ind_connected = _ind_tok is not None and _ind_tok.get("access_token")
+
+    if not _ind_connected:
+        with st.container(border=True):
+            _ic1, _ic2 = st.columns([3, 1])
+            with _ic1:
+                st.markdown("#### Connect your INDmoney account")
+                st.caption(
+                    "Read-only access — the dashboard can only **view** your portfolio and watchlist. "
+                    "It cannot place trades, move money, or modify your account in any way."
+                )
+            with _ic2:
+                if st.button("🔐 Connect INDmoney", key="hub_ind_connect", type="primary", use_container_width=True):
+                    _auth_url, _ = _indmoney_build_auth_url()
+                    st.markdown(
+                        f"<a href='{_auth_url}' target='_blank'>"
+                        f"<div style='background:#ff6b00;color:white;padding:10px 20px;border-radius:8px;"
+                        f"text-align:center;font-weight:700;font-size:1rem;margin-top:8px'>"
+                        f"👆 Tap here to authorise in INDmoney</div></a>",
+                        unsafe_allow_html=True
+                    )
+                    st.info(
+                        "1. Tap the orange button above\n"
+                        "2. Log into INDmoney and approve read access\n"
+                        "3. You'll be redirected back here automatically"
+                    )
+    else:
+        with st.container(border=True):
+            _dc1, _dc2, _dc3 = st.columns([2, 2, 1])
+            with _dc1:
+                st.success("✅ INDmoney connected")
+                _saved_at = _ind_tok.get("saved_at", "")
+                if _saved_at:
+                    st.caption(f"Last authorised: {_saved_at[:19]}")
+            with _dc2:
+                if st.button("🔄 Sync Portfolio Now", key="hub_ind_sync", type="primary", use_container_width=True):
+                    _access_token = _ind_tok.get("access_token", "")
+                    # Try to list tools first so we know what's available
+                    with st.spinner("Connecting to INDmoney…"):
+                        _tools_resp, _tools_err = _indmoney_list_tools(_access_token)
+                    if _tools_err and "401" in str(_tools_err):
+                        # Token expired — try refresh
+                        _new_tok, _ref_err = _indmoney_refresh_token(_ind_tok.get("refresh_token",""))
+                        if _new_tok:
+                            _access_token = _new_tok["access_token"]
+                            _tools_resp, _tools_err = _indmoney_list_tools(_access_token)
+                        else:
+                            st.error(f"Session expired. Please reconnect. ({_ref_err})")
+                            _indmoney_token_clear()
+                            st.rerun()
+
+                    if _tools_resp:
+                        _available_tools = [t.get("name","") for t in _tools_resp.get("result", {}).get("tools", [])]
+                        st.session_state["indmoney_tools"] = _available_tools
+
+                        # Fetch portfolio
+                        _pf_resp, _pf_err = _indmoney_fetch_portfolio(_access_token)
+                        if _pf_resp:
+                            _pf_content = _pf_resp.get("result", {})
+                            # MCP returns content as list of text/data blocks
+                            _raw_content = _pf_content.get("content", [])
+                            _pf_stocks = []
+                            for _block in _raw_content:
+                                _text = _block.get("text", "") if isinstance(_block, dict) else str(_block)
+                                # Try to parse as JSON
+                                try:
+                                    _parsed_block = json.loads(_text)
+                                    if isinstance(_parsed_block, list):
+                                        for _item in _parsed_block:
+                                            _sym = (_item.get("symbol") or _item.get("ticker") or
+                                                    _item.get("scrip") or _item.get("tradingsymbol","")).upper()
+                                            if _sym:
+                                                _entry = {"symbol": _sym, "source": "indmoney_live"}
+                                                if _item.get("average_price") or _item.get("avg_price"):
+                                                    _entry["avg_price"] = float(_item.get("average_price") or _item.get("avg_price",0))
+                                                if _item.get("quantity") or _item.get("qty"):
+                                                    _entry["qty"] = float(_item.get("quantity") or _item.get("qty",0))
+                                                _pf_stocks.append(_entry)
+                                    elif isinstance(_parsed_block, dict):
+                                        _holdings = (_parsed_block.get("holdings") or
+                                                     _parsed_block.get("portfolio") or
+                                                     _parsed_block.get("stocks") or [])
+                                        for _item in _holdings:
+                                            _sym = (_item.get("symbol") or _item.get("ticker","")).upper()
+                                            if _sym:
+                                                _pf_stocks.append({"symbol": _sym, "source": "indmoney_live",
+                                                                    "avg_price": float(_item.get("average_price",0) or 0)})
+                                except Exception:
+                                    pass
+
+                            if _pf_stocks:
+                                _hub["portfolio"] = _pf_stocks
+                                st.session_state["hub_data"] = _hub
+                                _hub_save(_hub)
+                                st.success(f"✅ Synced {len(_pf_stocks)} holdings from INDmoney!")
+                                st.rerun()
+                            else:
+                                # Store raw response for debugging
+                                st.session_state["indmoney_raw"] = str(_pf_resp)[:1000]
+                                st.warning("Connected but could not parse holdings. Raw response stored for inspection.")
+                        else:
+                            st.error(f"Could not fetch portfolio: {_pf_err}")
+                    else:
+                        st.error(f"Could not connect to INDmoney MCP: {_tools_err}")
+
+            with _dc3:
+                if st.button("🔌 Disconnect", key="hub_ind_disconnect", use_container_width=True):
+                    _indmoney_token_clear()
+                    st.session_state.pop("indmoney_connected", None)
+                    st.rerun()
+
+            # Show available tools if discovered
+            if st.session_state.get("indmoney_tools"):
+                with st.expander("🔧 Available INDmoney tools"):
+                    st.write(st.session_state["indmoney_tools"])
+            if st.session_state.get("indmoney_raw"):
+                with st.expander("🔍 Raw MCP response (debug)"):
+                    st.code(st.session_state["indmoney_raw"])
+
+    st.markdown("---")
     # ── STEP 1: Upload Sources ───────────────────────────────────────────────
     st.markdown("### 📥 Step 1 — Upload Your Sources")
 
