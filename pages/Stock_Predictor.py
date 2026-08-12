@@ -462,6 +462,7 @@ PREDICTIONS_FILE = Path("./screener_predictions.json")
 UNIVERSE_CACHE   = Path("./screener_universe_cache.json")
 WATCHLIST_FILE   = Path("./watchlist.json")
 PORTFOLIO_FILE   = Path("./portfolio_holdings.json")
+HUB_FILE         = Path("./my_stocks_hub.json")
 PAPER_TRADES_FILE = Path("./paper_trades.json")
 PRICE_HISTORY_FILE = Path("./price_history.json")
 VALIDATION_LOG_FILE = Path("./validation_log.json")
@@ -4702,13 +4703,14 @@ def _compute_market_risk_score() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 st.title("🔮 Stock Predictor Model")
 
-main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6 = st.tabs([
+main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7 = st.tabs([
     "📈 Analysis & Prediction",
     "🔍 Find Stocks",
     "💼 My Portfolio",
     "🎯 Live Trade Signals",
     "🚨 Market Risk Monitor",
     "📓 Prediction Tracker",
+    "🗂️ My Stocks Hub",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -14137,3 +14139,402 @@ with main_tab6:
         "up/down direction get boosted, wrong signals get reduced. "
         "Delta = |Predicted − Actual| / Actual. Lower delta = better calibration."
     )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — My Stocks Hub
+# ══════════════════════════════════════════════════════════════════════════════
+with main_tab7:
+
+    # ── Hub persistence helpers ──────────────────────────────────────────────
+    def _hub_load():
+        if HUB_FILE.exists():
+            try:
+                return json.loads(HUB_FILE.read_text())
+            except Exception:
+                pass
+        return {"portfolio": [], "watchlist": [], "screener": []}
+
+    def _hub_save(data):
+        try:
+            HUB_FILE.write_text(json.dumps(data, indent=2, default=str))
+        except Exception:
+            pass
+
+    st.markdown("## 🗂️ My Stocks Hub")
+    st.caption(
+        "Sync your stocks from INDmoney portfolio (CSV), Screener.in (CSV), and a manual watchlist. "
+        "The hub merges all three, runs full analysis, and shortlists the **top 3 picks for tomorrow**."
+    )
+
+    _hub = _hub_load()
+    if "hub_data" not in st.session_state:
+        st.session_state["hub_data"] = _hub
+
+    # ── Section 1: Import sources ────────────────────────────────────────────
+    st.markdown("### 📥 Import Sources")
+    _src_col1, _src_col2, _src_col3 = st.columns(3)
+
+    # ── INDmoney portfolio CSV ───────────────────────────────────────────────
+    with _src_col1:
+        with st.container(border=True):
+            st.markdown("#### 💰 INDmoney Portfolio")
+            st.caption("App → Portfolio → ⬇ Download → upload the CSV here")
+            _ind_file = st.file_uploader("Upload INDmoney CSV", type=["csv"], key="hub_ind_csv")
+            if _ind_file:
+                try:
+                    import io as _io
+                    import pandas as _hpd
+                    _ind_df = _hpd.read_csv(_io.StringIO(_ind_file.read().decode("utf-8", errors="ignore")))
+                    _ind_df.columns = [c.strip().lower().replace(" ", "_") for c in _ind_df.columns]
+                    # INDmoney CSV columns vary — try common patterns
+                    _sym_col = next((c for c in _ind_df.columns if any(k in c for k in ["symbol","ticker","scrip","stock","name"])), None)
+                    _qty_col = next((c for c in _ind_df.columns if any(k in c for k in ["qty","quantity","shares","units"])), None)
+                    _avg_col = next((c for c in _ind_df.columns if any(k in c for k in ["avg","average","buy_price","cost","purchase"])), None)
+                    if _sym_col:
+                        _parsed = []
+                        for _, _row in _ind_df.iterrows():
+                            _sym = str(_row[_sym_col]).strip().upper()
+                            if not _sym or _sym == "NAN":
+                                continue
+                            # Strip exchange suffix if present (NSE:RELIANCE → RELIANCE)
+                            if ":" in _sym:
+                                _sym = _sym.split(":")[-1]
+                            # Add .NS for Indian stocks if no dot present and looks Indian
+                            _entry = {"symbol": _sym, "source": "indmoney"}
+                            if _qty_col:
+                                try: _entry["qty"] = float(_row[_qty_col])
+                                except Exception: pass
+                            if _avg_col:
+                                try: _entry["avg_price"] = float(str(_row[_avg_col]).replace(",","").replace("₹","").strip())
+                                except Exception: pass
+                            _parsed.append(_entry)
+                        _hub["portfolio"] = _parsed
+                        st.session_state["hub_data"] = _hub
+                        _hub_save(_hub)
+                        st.success(f"Loaded {len(_parsed)} stocks from INDmoney portfolio.")
+                    else:
+                        st.warning(f"Could not detect symbol column. Columns found: {list(_ind_df.columns)}")
+                except Exception as _e:
+                    st.error(f"Could not parse CSV: {_e}")
+
+            _cur_pf = _hub.get("portfolio", [])
+            if _cur_pf:
+                st.caption(f"✅ {len(_cur_pf)} holdings loaded: {', '.join(h['symbol'] for h in _cur_pf[:5])}{'…' if len(_cur_pf)>5 else ''}")
+                if st.button("🗑 Clear portfolio", key="hub_clear_pf"):
+                    _hub["portfolio"] = []
+                    st.session_state["hub_data"] = _hub
+                    _hub_save(_hub)
+                    st.rerun()
+
+    # ── Screener.in CSV ──────────────────────────────────────────────────────
+    with _src_col2:
+        with st.container(border=True):
+            st.markdown("#### 🔬 Screener.in")
+            st.caption("screener.in → your screen → Export to Excel/CSV → upload here")
+            _scr_file = st.file_uploader("Upload Screener.in CSV", type=["csv","xlsx"], key="hub_scr_csv")
+            if _scr_file:
+                try:
+                    import io as _io2
+                    import pandas as _hpd2
+                    if _scr_file.name.endswith(".xlsx"):
+                        _scr_df = _hpd2.read_excel(_io2.BytesIO(_scr_file.read()))
+                    else:
+                        _scr_df = _hpd2.read_csv(_io2.StringIO(_scr_file.read().decode("utf-8", errors="ignore")))
+                    _scr_df.columns = [c.strip().lower().replace(" ", "_") for c in _scr_df.columns]
+                    _sym_col2 = next((c for c in _scr_df.columns if any(k in c for k in ["symbol","ticker","name","scrip","company"])), None)
+                    if _sym_col2:
+                        _scr_parsed = []
+                        for _, _row in _scr_df.iterrows():
+                            _sym = str(_row[_sym_col2]).strip().upper()
+                            if not _sym or _sym == "NAN":
+                                continue
+                            if ":" in _sym:
+                                _sym = _sym.split(":")[-1]
+                            _scr_parsed.append({"symbol": _sym, "source": "screener"})
+                        _hub["screener"] = _scr_parsed
+                        st.session_state["hub_data"] = _hub
+                        _hub_save(_hub)
+                        st.success(f"Loaded {len(_scr_parsed)} stocks from Screener.in.")
+                    else:
+                        st.warning(f"Could not detect symbol column. Columns found: {list(_scr_df.columns)}")
+                except Exception as _e:
+                    st.error(f"Could not parse file: {_e}")
+
+            _cur_scr = _hub.get("screener", [])
+            if _cur_scr:
+                st.caption(f"✅ {len(_cur_scr)} stocks loaded: {', '.join(h['symbol'] for h in _cur_scr[:5])}{'…' if len(_cur_scr)>5 else ''}")
+                if st.button("🗑 Clear screener list", key="hub_clear_scr"):
+                    _hub["screener"] = []
+                    st.session_state["hub_data"] = _hub
+                    _hub_save(_hub)
+                    st.rerun()
+
+    # ── Manual watchlist ─────────────────────────────────────────────────────
+    with _src_col3:
+        with st.container(border=True):
+            st.markdown("#### 👁 Manual Watchlist")
+            st.caption("Paste tickers separated by comma or newline (e.g. AAPL, SERV, NVDA)")
+            _wl_saved = ", ".join(h["symbol"] for h in _hub.get("watchlist", []))
+            _wl_input = st.text_area("Your watchlist tickers", value=_wl_saved, height=120, key="hub_wl_input",
+                                     placeholder="AAPL, NVDA, SERV, RELIANCE.NS …")
+            if st.button("💾 Save watchlist", key="hub_save_wl", use_container_width=True, type="primary"):
+                import re as _re2
+                _wl_syms = [s.strip().upper() for s in _re2.split(r"[,\n\r]+", _wl_input) if s.strip()]
+                _hub["watchlist"] = [{"symbol": s, "source": "manual"} for s in _wl_syms]
+                st.session_state["hub_data"] = _hub
+                _hub_save(_hub)
+                st.success(f"Saved {len(_wl_syms)} tickers.")
+                st.rerun()
+
+            _cur_wl = _hub.get("watchlist", [])
+            if _cur_wl:
+                st.caption(f"✅ {len(_cur_wl)} tickers saved")
+
+    # ── Merged stock list ────────────────────────────────────────────────────
+    st.markdown("---")
+    _all_hub_entries = (
+        _hub.get("portfolio", []) +
+        _hub.get("watchlist", []) +
+        _hub.get("screener", [])
+    )
+    # Deduplicate by symbol, preserving avg_price from portfolio if available
+    _seen_syms = {}
+    for _e in _all_hub_entries:
+        _s = _e["symbol"]
+        if _s not in _seen_syms:
+            _seen_syms[_s] = _e
+        elif _e.get("avg_price") and not _seen_syms[_s].get("avg_price"):
+            _seen_syms[_s]["avg_price"] = _e["avg_price"]
+    _hub_stocks = list(_seen_syms.values())
+
+    if not _hub_stocks:
+        st.info("No stocks loaded yet. Upload a CSV or add tickers manually above.")
+    else:
+        st.markdown(f"### 📊 Analysis — {len(_hub_stocks)} stocks")
+
+        # Source breakdown
+        _src_pf  = sum(1 for e in _hub_stocks if e.get("source") == "indmoney")
+        _src_scr = sum(1 for e in _hub_stocks if e.get("source") == "screener")
+        _src_man = sum(1 for e in _hub_stocks if e.get("source") == "manual")
+        _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+        _sc1.metric("Total Stocks", len(_hub_stocks))
+        _sc2.metric("INDmoney Portfolio", _src_pf)
+        _sc3.metric("Screener.in", _src_scr)
+        _sc4.metric("Manual Watchlist", _src_man)
+
+        # ── Run Analysis ─────────────────────────────────────────────────────
+        if st.button("🚀 Run Full Analysis & Find Top 3", key="hub_run_analysis", type="primary", use_container_width=True):
+            st.session_state["hub_analysis_done"] = False
+            st.session_state["hub_results"] = []
+
+            _hub_progress = st.progress(0, text="Starting analysis…")
+            _hub_results  = []
+            _total = len(_hub_stocks)
+
+            for _hi, _hentry in enumerate(_hub_stocks):
+                _hsym   = _hentry["symbol"]
+                _havg   = _hentry.get("avg_price", 0) or 0
+                _hub_progress.progress((_hi + 1) / _total, text=f"Analysing {_hsym} ({_hi+1}/{_total})…")
+
+                try:
+                    # Fetch 5-min data for signal computation
+                    _hdf = _fetch_live_candles(_hsym, "5m", "5d")
+                    if _hdf is None or _hdf.empty or len(_hdf) < 20:
+                        # Try daily data as fallback
+                        _hdf = _fetch_live_candles(_hsym, "1d", "3mo")
+                    if _hdf is None or _hdf.empty or len(_hdf) < 10:
+                        _hub_results.append({"symbol": _hsym, "error": "No data", "score": -999, "avg_price": _havg})
+                        continue
+
+                    _hsig  = _compute_live_signals(_hdf)
+                    _hhfr  = _hedge_fund_rules(_hdf)
+                    _hres, _hsup = _compute_sr_levels(_hdf)
+                    _htgt  = _compute_targets(_hdf, _hres, _hsup)
+
+                    _hclose = float(_hdf["Close"].dropna().iloc[-1])
+                    _hrsi   = _hsig.get("rsi") or 50
+                    _hmh    = _hsig.get("macd_hist") or 0
+                    _hbbp   = _hsig.get("bb_pct") or 50
+                    _hvol   = _hsig.get("vol_z") or 0
+                    _hhf_score = _hhfr.get("score", 0)
+
+                    # ── Composite opportunity score (0–100) ──────────────────
+                    # Higher = better buy opportunity for tomorrow
+                    _opp_score = 0
+                    # RSI: best between 40–60 (momentum building, not overbought)
+                    if 35 <= _hrsi <= 55:   _opp_score += 25
+                    elif 55 < _hrsi <= 65:  _opp_score += 15
+                    elif _hrsi < 35:        _opp_score += 10  # oversold bounce potential
+                    # MACD histogram positive and growing
+                    if _hmh > 0:            _opp_score += 20
+                    elif _hmh > -0.001:     _opp_score += 5
+                    # Bollinger: in lower-mid band = room to run
+                    if _hbbp < 60:          _opp_score += 15
+                    elif _hbbp < 75:        _opp_score += 8
+                    # Volume confirmation
+                    if _hvol > 1.5:         _opp_score += 10
+                    # Quant rule engine
+                    _opp_score += min(max(_hhf_score * 3, -20), 20)
+                    # Signal override
+                    _hsig_type = _hsig.get("signal", "HOLD")
+                    if _hsig_type == "EXIT_NOW":   _opp_score -= 30
+                    elif _hsig_type == "WATCH":    _opp_score -= 10
+                    elif _hsig_type == "HOLD_BUY_DIP": _opp_score += 10
+
+                    # ── Prediction tracker lookup ────────────────────────────
+                    _hpt_data     = _ptd.get("records", {}).get(_hsym, [])
+                    _hpt_pred_tmr = None
+                    _hpt_accuracy = None
+                    if _hpt_data:
+                        _hpt_last = sorted(_hpt_data, key=lambda x: x.get("date",""), reverse=True)
+                        for _hpr in _hpt_last:
+                            if _hpr.get("pred_tomorrow"):
+                                _hpt_pred_tmr = _hpr["pred_tomorrow"]
+                                break
+                        # Accuracy: % of records where direction was correct
+                        _hpt_correct = [r for r in _hpt_data if r.get("actual") and r.get("pred_today")]
+                        if _hpt_correct:
+                            _hpt_right = sum(1 for r in _hpt_correct
+                                             if (r["pred_today"] > r.get("actual_prev", r["actual"])) ==
+                                                (r["actual"] > r.get("actual_prev", r["actual"])))
+                            _hpt_accuracy = _hpt_right / len(_hpt_correct) * 100
+
+                    # Boost score if prediction tracker says upside tomorrow
+                    if _hpt_pred_tmr and _hpt_pred_tmr > _hclose:
+                        _pred_upside = (_hpt_pred_tmr - _hclose) / _hclose * 100
+                        _opp_score += min(_pred_upside * 2, 15)
+
+                    # P&L if holding
+                    _hpnl = ((_hclose - _havg) / _havg * 100) if _havg > 0 else None
+
+                    _hub_results.append({
+                        "symbol":       _hsym,
+                        "price":        _hclose,
+                        "avg_price":    _havg,
+                        "pnl_pct":      _hpnl,
+                        "score":        round(_opp_score, 1),
+                        "rsi":          _hrsi,
+                        "macd_hist":    _hmh,
+                        "bb_pct":       _hbbp,
+                        "vol_z":        _hvol,
+                        "hf_score":     _hhf_score,
+                        "signal":       _hsig_type,
+                        "hf_verdict":   _hhfr.get("verdict", "—"),
+                        "pred_tomorrow":_hpt_pred_tmr,
+                        "pt_accuracy":  _hpt_accuracy,
+                        "fib_target":   _htgt.get("fib_100", 0),
+                        "session_stop": _htgt.get("session_stop", 0),
+                        "source":       _hentry.get("source", "—"),
+                        "error":        None,
+                    })
+
+                except Exception as _herr:
+                    _hub_results.append({"symbol": _hsym, "error": str(_herr), "score": -999, "avg_price": _havg})
+
+            _hub_progress.empty()
+            _hub_results.sort(key=lambda x: x["score"], reverse=True)
+            st.session_state["hub_results"]      = _hub_results
+            st.session_state["hub_analysis_done"] = True
+            st.rerun()
+
+        # ── Display results if analysis has been run ─────────────────────────
+        if st.session_state.get("hub_analysis_done") and st.session_state.get("hub_results"):
+            _res_all = st.session_state["hub_results"]
+            _res_ok  = [r for r in _res_all if r.get("error") is None]
+            _res_err = [r for r in _res_all if r.get("error")]
+
+            # ── TOP 3 PICKS ──────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("### 🏆 Top 3 Picks for Tomorrow")
+            _top3 = _res_ok[:3]
+
+            _medal = ["🥇", "🥈", "🥉"]
+            for _ti, _tr in enumerate(_top3):
+                _tc = "#00c853" if _tr["score"] >= 40 else "#ff9800" if _tr["score"] >= 20 else "#aaa"
+                _sig_emoji = {"EXIT_NOW":"🔴","WATCH":"🟡","HOLD":"🟢","HOLD_BUY_DIP":"🔵"}.get(_tr["signal"],"⚪")
+                _pred_line = ""
+                if _tr.get("pred_tomorrow") and _tr.get("price"):
+                    _pd_chg = (_tr["pred_tomorrow"] - _tr["price"]) / _tr["price"] * 100
+                    _pd_col = "#00c853" if _pd_chg >= 0 else "#ff5252"
+                    _pd_acc = f" · PT accuracy {_tr['pt_accuracy']:.0f}%" if _tr.get("pt_accuracy") else ""
+                    _pred_line = (f"<div style='font-size:0.8rem;color:{_pd_col};margin-top:4px'>"
+                                  f"📓 Prediction Tracker: {_pd_chg:+.2f}% tomorrow "
+                                  f"(target ${_tr['pred_tomorrow']:.2f}){_pd_acc}</div>")
+                _pnl_line = ""
+                if _tr.get("pnl_pct") is not None:
+                    _pc = "#00c853" if _tr["pnl_pct"] >= 0 else "#ff5252"
+                    _pnl_line = (f"<div style='font-size:0.8rem;color:{_pc};margin-top:2px'>"
+                                 f"Your P&L: {_tr['pnl_pct']:+.2f}% (avg ${_tr['avg_price']:.2f})</div>")
+                st.markdown(
+                    f"<div style='background:{_tc}18;border:2px solid {_tc};"
+                    f"border-radius:10px;padding:14px;margin-bottom:10px'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                    f"<div><span style='font-size:1.5rem'>{_medal[_ti]}</span> "
+                    f"<span style='font-size:1.4rem;font-weight:900;color:{_tc}'>{_tr['symbol']}</span> "
+                    f"<span style='color:#888;font-size:0.85rem'>{_sig_emoji} {_tr['signal']} · {_tr['hf_verdict']}</span></div>"
+                    f"<div style='text-align:right'>"
+                    f"<div style='font-size:1.2rem;font-weight:700;color:{_tc}'>Score {_tr['score']}</div>"
+                    f"<div style='font-size:0.8rem;color:#888'>Price ${_tr['price']:.2f}</div>"
+                    f"</div></div>"
+                    f"<div style='margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;font-size:0.78rem;color:#aaa'>"
+                    f"<span>RSI {_tr['rsi']:.0f}</span>"
+                    f"<span>MACD hist {_tr['macd_hist']:.4f}</span>"
+                    f"<span>BB {_tr['bb_pct']:.0f}%</span>"
+                    f"<span>Vol {_tr['vol_z']:.1f}σ</span>"
+                    f"<span>Quant {_tr['hf_score']:+d}</span>"
+                    f"<span>Fib target ${_tr['fib_target']:.2f}</span>"
+                    f"<span>Stop ${_tr['session_stop']:.2f}</span>"
+                    f"<span>Source: {_tr['source']}</span>"
+                    f"</div>"
+                    f"{_pred_line}{_pnl_line}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
+            # ── Full ranked table ────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("### 📋 All Stocks — Ranked by Opportunity Score")
+            import pandas as _hub_pd
+            _tbl_rows = []
+            for _r in _res_ok:
+                _row = {
+                    "Symbol":    _r["symbol"],
+                    "Score":     _r["score"],
+                    "Price":     f"${_r['price']:.2f}",
+                    "Signal":    _r["signal"],
+                    "HF Verdict":_r["hf_verdict"],
+                    "RSI":       f"{_r['rsi']:.0f}",
+                    "MACD Hist": f"{_r['macd_hist']:.4f}",
+                    "BB %":      f"{_r['bb_pct']:.0f}%",
+                    "Vol σ":     f"{_r['vol_z']:.1f}",
+                    "Pred Tomorrow": f"${_r['pred_tomorrow']:.2f}" if _r.get("pred_tomorrow") else "—",
+                    "PT Accuracy":   f"{_r['pt_accuracy']:.0f}%" if _r.get("pt_accuracy") else "—",
+                    "P&L":       f"{_r['pnl_pct']:+.1f}%" if _r.get("pnl_pct") is not None else "—",
+                    "Source":    _r["source"],
+                }
+                _tbl_rows.append(_row)
+            if _tbl_rows:
+                st.dataframe(_hub_pd.DataFrame(_tbl_rows), use_container_width=True, hide_index=True)
+
+            if _res_err:
+                with st.expander(f"⚠️ {len(_res_err)} stocks had no data"):
+                    for _e in _res_err:
+                        st.caption(f"{_e['symbol']}: {_e['error']}")
+
+            # ── One-click: add top 3 to prediction tracker ───────────────────
+            st.markdown("---")
+            if st.button("📓 Add Top 3 to Prediction Tracker", key="hub_add_pt", type="primary"):
+                _top3_syms = [r["symbol"] for r in _top3]
+                _pt_wl     = st.session_state.get("pt_watchlist", _ptd.get("watchlist", []))
+                _added     = []
+                for _ts in _top3_syms:
+                    if _ts not in _pt_wl:
+                        _pt_wl.append(_ts)
+                        _added.append(_ts)
+                if _added:
+                    st.session_state["pt_watchlist"] = _pt_wl
+                    _ptd["watchlist"] = _pt_wl
+                    _pt_save(_ptd)
+                    st.success(f"Added to Prediction Tracker: {', '.join(_added)}")
+                else:
+                    st.info("All top 3 stocks are already in Prediction Tracker.")
