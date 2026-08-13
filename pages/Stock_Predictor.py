@@ -3530,11 +3530,11 @@ def fetch_prediction_movements(sym, logged_at_str, entry_price):
 
 def _next_n_trading_days(start_date, n):
     """Return the next n weekday dates after start_date (no holiday adjustment)."""
-    days, d = [], start_date + datetime.datetime.timedelta(days=1)
+    days, d = [], start_date + datetime.timedelta(days=1)
     while len(days) < n:
         if d.weekday() < 5:   # Mon–Fri
             days.append(d)
-        d += datetime.datetime.timedelta(days=1)
+        d += datetime.timedelta(days=1)
     return days
 
 
@@ -14096,7 +14096,7 @@ with main_tab6:
     # ── UPDATE: Run predictions ───────────────────────────────────────────────
     if _pt_update and _pt_watchlist:
         today_str = str(datetime.date.today())
-        yesterday_str = str(datetime.date.today() - datetime.datetime.timedelta(days=1))
+        yesterday_str = str(datetime.date.today() - datetime.timedelta(days=1))
 
         _pt_progress = st.progress(0, text="Fetching live prices…")
         _pt_status   = st.empty()
