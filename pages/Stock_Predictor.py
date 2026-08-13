@@ -14615,10 +14615,16 @@ with main_tab7:
                 elif not _pdf_parsed:
                     st.warning("No stock tickers detected in the PDF. Try a PDF with clearly listed stock symbols.")
                 else:
-                    _hub["pdf"] = _pdf_parsed
+                    # Merge new tickers with existing — deduplicate by symbol
+                    _existing_pdf = {h["symbol"]: h for h in _hub.get("pdf", [])}
+                    for _t in _pdf_parsed:
+                        _existing_pdf[_t["symbol"]] = _t
+                    _hub["pdf"] = list(_existing_pdf.values())
                     st.session_state["hub_data"] = _hub
                     _hub_save(_hub)
-                    st.success(f"✅ {len(_pdf_parsed)} potential tickers extracted from PDF")
+                    _new_count = len(_pdf_parsed)
+                    _total_count = len(_hub["pdf"])
+                    st.success(f"✅ {_new_count} tickers from this PDF added · {_total_count} total across all PDFs")
                     st.caption("Review the list below — PDF extraction may include false positives. Uncheck stocks you don't want.")
 
             _cur_pdf = _hub.get("pdf", [])
