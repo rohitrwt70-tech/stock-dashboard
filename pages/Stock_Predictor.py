@@ -14062,15 +14062,18 @@ with main_tab6:
         with _pt_bk2:
             st.caption("Restore from a previously downloaded backup.")
             _pt_restore_file = st.file_uploader("Upload predictions JSON", type=["json"], key="pt_restore_upload")
-            if _pt_restore_file:
+            if _pt_restore_file and not st.session_state.get("_pt_restored_done"):
                 try:
                     _pt_restored = json.loads(_pt_restore_file.read())
                     _pt_save(_pt_restored)
-                    st.session_state.pop("pt_watchlist", None)  # force reload
-                    st.success(f"✅ Restored — {sum(len(v) for v in _pt_restored.get('records',{}).values())} records.")
-                    st.rerun()
+                    st.session_state.pop("pt_watchlist", None)
+                    st.session_state["_pt_restored_done"] = True
+                    n_recs = sum(len(v) for v in _pt_restored.get('records',{}).values())
+                    st.success(f"✅ Restored — {n_recs} records. Refresh the page to see updated data.")
                 except Exception as _ptre:
                     st.error(f"Could not restore: {_ptre}")
+            if not _pt_restore_file:
+                st.session_state.pop("_pt_restored_done", None)
 
     # ── Update + Train buttons ────────────────────────────────────────────────
     _pt_ub_col, _pt_tb_col, _pt_clr_col = st.columns([2, 2, 1])
@@ -14508,18 +14511,21 @@ with main_tab7:
             st.caption("Restore from a previously downloaded backup.")
             _restore_file = st.file_uploader("Upload backup JSON", type=["json"],
                                               key="hub_restore_upload")
-            if _restore_file:
+            if _restore_file and not st.session_state.get("_hub_restored_done"):
                 try:
                     _restored = json.loads(_restore_file.read())
                     _hub_save(_restored)
                     st.session_state["hub_data"] = _restored
                     _hub = _restored
+                    st.session_state["_hub_restored_done"] = True
                     st.success(f"✅ Restored — {len(_restored.get('pdf',[]))} PDF · "
                                f"{len(_restored.get('portfolio',[]))} portfolio · "
-                               f"{len(_restored.get('watchlist',[]))} watchlist stocks")
-                    st.rerun()
+                               f"{len(_restored.get('watchlist',[]))} watchlist stocks. "
+                               f"Scroll down to see your stocks.")
                 except Exception as _re:
                     st.error(f"Could not restore: {_re}")
+            if not _restore_file:
+                st.session_state.pop("_hub_restored_done", None)
 
     # ── INDmoney Live Connection ─────────────────────────────────────────────
     st.markdown("### 🔗 INDmoney Live Sync")
@@ -15385,7 +15391,7 @@ with main_tab7:
                     _dlog_restore_file = st.file_uploader(
                         "Upload backup JSON", type=["json"], key="dlog_restore_upload"
                     )
-                    if _dlog_restore_file:
+                    if _dlog_restore_file and not st.session_state.get("_dlog_restored_done"):
                         try:
                             _dlog_restored = json.loads(_dlog_restore_file.read())
                             if not isinstance(_dlog_restored, list):
@@ -15393,10 +15399,13 @@ with main_tab7:
                             else:
                                 _dlog_save(_dlog_restored)
                                 st.session_state["decision_log"] = _dlog_restored
-                                st.success(f"✅ Restored {len(_dlog_restored)} entries.")
-                                st.rerun()
+                                _dlog = _dlog_restored
+                                st.session_state["_dlog_restored_done"] = True
+                                st.success(f"✅ Restored {len(_dlog_restored)} entries. Scroll down to see the log.")
                         except Exception as _dre:
                             st.error(f"Could not restore: {_dre}")
+                    if not _dlog_restore_file:
+                        st.session_state.pop("_dlog_restored_done", None)
 
             # ── Update Yesterday's Results button ─────────────────────────────
             _upd_col1, _upd_col2 = st.columns([2, 2])
