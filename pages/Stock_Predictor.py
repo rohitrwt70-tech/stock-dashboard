@@ -14432,8 +14432,87 @@ with main_tab7:
             return [], [], str(_e)
 
     # ── Load hub state ───────────────────────────────────────────────────────
-    # Always read from disk — session_state is lost on every Railway page refresh
+    # Primary: disk (works locally). On Railway (ephemeral disk), falls back to
+    # browser localStorage via a JS bridge injected below.
     _hub = _hub_load()
+
+    # JS bridge: on every render, write current hub to localStorage.
+    # On page load with empty disk, read localStorage and inject via query param.
+    _hub_json_for_js = json.dumps(_hub, default=str).replace("'", "\\'")
+    import streamlit.components.v1 as _stc
+    _stc.html(f"""
+    <script>
+    (function() {{
+        // Always persist latest hub to localStorage
+        var data = '{_hub_json_for_js}';
+        try {{
+            var parsed = JSON.parse(data);
+            var isEmpty = (
+                (!parsed.portfolio || parsed.portfolio.length === 0) &&
+                (!parsed.pdf       || parsed.pdf.length === 0) &&
+                (!parsed.watchlist || parsed.watchlist.length === 0) &&
+                (!parsed.screener  || parsed.screener.length === 0)
+            );
+            if (!isEmpty) {{
+                localStorage.setItem('stockdash_hub', data);
+            }} else {{
+                // Disk is empty — try to restore from localStorage
+                var saved = localStorage.getItem('stockdash_hub');
+                if (saved) {{
+                    var sp = new URLSearchParams(window.top.location.search);
+                    if (!sp.get('hub_ls_restore')) {{
+                        // Pass data via sessionStorage and trigger reload with flag
+                        sessionStorage.setItem('stockdash_hub_restore', saved);
+                        var url = new URL(window.top.location.href);
+                        url.searchParams.set('hub_ls_restore', '1');
+                        window.top.location.replace(url.toString());
+                    }}
+                }}
+            }}
+        }} catch(e) {{}}
+    }})();
+    </script>
+    """, height=0)
+
+    # Handle localStorage restore via sessionStorage (passed as query param flag)
+    # We can't directly read sessionStorage from Python, so we use a text_input hidden bridge
+    _ls_flag = st.query_params.get("hub_ls_restore", "")
+    if _ls_flag == "1":
+        # Show a one-time restore button — user clicks it once after redirect
+        _stc.html("""
+        <script>
+        (function() {
+            var saved = sessionStorage.getItem('stockdash_hub_restore');
+            if (saved) {
+                // Write to a hidden input that Streamlit can read via query param
+                // Encode as base64 to avoid URL length issues
+                var b64 = btoa(unescape(encodeURIComponent(saved)));
+                var url = new URL(window.top.location.href);
+                url.searchParams.delete('hub_ls_restore');
+                url.searchParams.set('hub_ls_data', b64);
+                sessionStorage.removeItem('stockdash_hub_restore');
+                window.top.location.replace(url.toString());
+            }
+        })();
+        </script>
+        """, height=0)
+
+    _ls_data_b64 = st.query_params.get("hub_ls_data", "")
+    if _ls_data_b64:
+        try:
+            import base64 as _b64
+            _ls_restored = json.loads(_b64.b64decode(_ls_data_b64 + "==").decode("utf-8"))
+            _hub_save(_ls_restored)
+            _hub = _ls_restored
+            # Clear the query param
+            _qp_clean = dict(st.query_params)
+            _qp_clean.pop("hub_ls_data", None)
+            st.query_params.clear()
+            for _k, _v in _qp_clean.items():
+                st.query_params[_k] = _v
+        except Exception:
+            pass
+
     st.session_state["hub_data"] = _hub
 
     st.markdown("## 🗂️ My Stocks Hub")
@@ -14442,13 +14521,13 @@ with main_tab7:
         "Review the fetched stocks, then hit **Run Analysis** to get top picks for tomorrow."
     )
 
-    # ── Backup / Restore (survives Railway restarts) ─────────────────────────
+    # ── Backup / Restore ─────────────────────────────────────────────────────
     _total_saved = (len(_hub.get("portfolio",[])) + len(_hub.get("pdf",[])) +
                     len(_hub.get("watchlist",[])) + len(_hub.get("screener",[])))
     with st.expander(f"💾 Backup & Restore — {_total_saved} stocks saved", expanded=False):
         _bk1, _bk2 = st.columns(2)
         with _bk1:
-            st.caption("Download your hub list as JSON — re-upload if the server restarts.")
+            st.caption("Download your hub list as a backup file.")
             _hub_json_bytes = json.dumps(_hub, indent=2, default=str).encode()
             st.download_button(
                 "⬇️ Download Hub Backup",
@@ -14458,7 +14537,7 @@ with main_tab7:
                 use_container_width=True,
             )
         with _bk2:
-            st.caption("Restore from a previously downloaded backup file.")
+            st.caption("Restore from a previously downloaded backup.")
             _restore_file = st.file_uploader("Upload backup JSON", type=["json"],
                                               key="hub_restore_upload")
             if _restore_file:
