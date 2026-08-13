@@ -14727,12 +14727,53 @@ with main_tab7:
         if not _selected_syms:
             st.warning("No stocks selected. Check at least one stock above.")
         else:
-            _run_btn = st.button(
-                f"▶ Run Analysis on {len(_selected_syms)} stocks",
-                key="hub_run_analysis",
-                type="primary",
-                use_container_width=True,
-            )
+            st.caption("Choose your trading style — weights the 4 scoring layers accordingly.")
+            _mode_cols = st.columns(3)
+            with _mode_cols[0]:
+                _btn_intraday = st.button(
+                    f"⚡ Intraday\n{len(_selected_syms)} stocks",
+                    key="hub_run_intraday",
+                    type="primary",
+                    use_container_width=True,
+                    help="MTF 40% · Quant 35% · Pred Tracker 15% · Fundamentals 10%",
+                )
+            with _mode_cols[1]:
+                _btn_swing = st.button(
+                    f"📈 Swing (2-10d)\n{len(_selected_syms)} stocks",
+                    key="hub_run_swing",
+                    type="primary",
+                    use_container_width=True,
+                    help="Fundamentals 40% · Quant 30% · Pred Tracker 20% · MTF 10%",
+                )
+            with _mode_cols[2]:
+                _btn_both = st.button(
+                    f"⚖️ Both\n{len(_selected_syms)} stocks",
+                    key="hub_run_both",
+                    type="primary",
+                    use_container_width=True,
+                    help="Balanced: MTF 25% · Quant 25% · Fundamentals 30% · Pred Tracker 20%",
+                )
+
+            # Weights per mode
+            _HUB_WEIGHT_PRESETS = {
+                "intraday": {"w_mtf": 0.40, "w_hf": 0.35, "w_fund": 0.10, "w_pt": 0.15,
+                             "label": "⚡ Intraday"},
+                "swing":    {"w_mtf": 0.10, "w_hf": 0.30, "w_fund": 0.40, "w_pt": 0.20,
+                             "label": "📈 Swing"},
+                "both":     {"w_mtf": 0.25, "w_hf": 0.25, "w_fund": 0.30, "w_pt": 0.20,
+                             "label": "⚖️ Both"},
+            }
+
+            _run_mode = None
+            if _btn_intraday: _run_mode = "intraday"
+            elif _btn_swing:  _run_mode = "swing"
+            elif _btn_both:   _run_mode = "both"
+
+            _run_btn = _run_mode is not None
+            if _run_btn:
+                st.session_state["hub_run_mode"] = _run_mode
+            _active_mode = st.session_state.get("hub_run_mode", "both")
+            _wp = _HUB_WEIGHT_PRESETS[_active_mode]
 
             if _run_btn:
                 st.session_state["hub_analysis_done"] = False
@@ -14866,12 +14907,11 @@ with main_tab7:
                                 _pt_score_100 = float(np.clip(50 + _pt_upside * 300 * _acc_w, 0, 100))
 
                         # ── Weighted composite score (0-100) ──────────────────
-                        # Weights: HF quant 25%, MTF confluence 25%, Fundamentals 30%, PT 20%
                         _composite = (
-                            _hf_score_100 * 0.25 +
-                            _mtf_sc       * 0.25 +
-                            _fund_sc      * 0.30 +
-                            _pt_score_100 * 0.20
+                            _hf_score_100 * _wp["w_hf"]   +
+                            _mtf_sc       * _wp["w_mtf"]  +
+                            _fund_sc      * _wp["w_fund"]  +
+                            _pt_score_100 * _wp["w_pt"]
                         )
 
                         # Hard penalty: EXIT_NOW signal drops score significantly
@@ -14946,9 +14986,17 @@ with main_tab7:
             _res_err = [r for r in _res_all if r.get("error")]
 
             # Top 3
+            _disp_mode = st.session_state.get("hub_run_mode", "both")
+            _disp_wp   = _HUB_WEIGHT_PRESETS[_disp_mode]
             st.markdown("---")
-            st.markdown("### 🏆 Top 3 Picks for Tomorrow")
-            st.caption("Score 0-100 · 4-layer engine: Quant rules 25% + Multi-timeframe 25% + Fundamentals 30% + Prediction Tracker 20%")
+            st.markdown(f"### 🏆 Top 3 Picks — {_disp_wp['label']} Mode")
+            st.caption(
+                f"Score 0-100 · Mode: **{_disp_wp['label']}** · "
+                f"MTF {int(_disp_wp['w_mtf']*100)}% · "
+                f"Quant {int(_disp_wp['w_hf']*100)}% · "
+                f"Fundamentals {int(_disp_wp['w_fund']*100)}% · "
+                f"Pred Tracker {int(_disp_wp['w_pt']*100)}%"
+            )
             _top3  = _res_ok[:3]
             _medal = ["🥇", "🥈", "🥉"]
             for _ti, _tr in enumerate(_top3):
@@ -15024,7 +15072,7 @@ with main_tab7:
 
             # Full table
             st.markdown("---")
-            st.markdown("### 📋 All Stocks — Ranked by Composite Score")
+            st.markdown(f"### 📋 All Stocks — Ranked by Composite Score ({_disp_wp['label']} Mode)")
             import pandas as _hub_pd
             _tbl = []
             for _r in _res_ok:
