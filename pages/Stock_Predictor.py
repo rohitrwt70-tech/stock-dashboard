@@ -640,7 +640,8 @@ PREDICTIONS_FILE = Path("./screener_predictions.json")
 UNIVERSE_CACHE   = Path("./screener_universe_cache.json")
 WATCHLIST_FILE      = Path("./watchlist.json")
 PORTFOLIO_FILE      = Path("./portfolio_holdings.json")
-HUB_FILE            = Path("./my_stocks_hub.json")
+_DATA_DIR           = Path("/data") if Path("/data").exists() else Path(".")
+HUB_FILE            = _DATA_DIR / "my_stocks_hub.json"
 INDMONEY_TOKEN_FILE = Path("./indmoney_token.json")
 PAPER_TRADES_FILE = Path("./paper_trades.json")
 PRICE_HISTORY_FILE = Path("./price_history.json")
@@ -14431,17 +14432,47 @@ with main_tab7:
             return [], [], str(_e)
 
     # ── Load hub state ───────────────────────────────────────────────────────
+    # Always read from disk — session_state is lost on every Railway page refresh
     _hub = _hub_load()
-    if "hub_data" not in st.session_state:
-        st.session_state["hub_data"] = _hub
-    else:
-        _hub = st.session_state["hub_data"]
+    st.session_state["hub_data"] = _hub
 
     st.markdown("## 🗂️ My Stocks Hub")
     st.caption(
         "Connect INDmoney live, or upload your portfolio/watchlist from CSV/Excel/PDF. "
         "Review the fetched stocks, then hit **Run Analysis** to get top picks for tomorrow."
     )
+
+    # ── Backup / Restore (survives Railway restarts) ─────────────────────────
+    _total_saved = (len(_hub.get("portfolio",[])) + len(_hub.get("pdf",[])) +
+                    len(_hub.get("watchlist",[])) + len(_hub.get("screener",[])))
+    with st.expander(f"💾 Backup & Restore — {_total_saved} stocks saved", expanded=False):
+        _bk1, _bk2 = st.columns(2)
+        with _bk1:
+            st.caption("Download your hub list as JSON — re-upload if the server restarts.")
+            _hub_json_bytes = json.dumps(_hub, indent=2, default=str).encode()
+            st.download_button(
+                "⬇️ Download Hub Backup",
+                data=_hub_json_bytes,
+                file_name="my_stocks_hub.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+        with _bk2:
+            st.caption("Restore from a previously downloaded backup file.")
+            _restore_file = st.file_uploader("Upload backup JSON", type=["json"],
+                                              key="hub_restore_upload")
+            if _restore_file:
+                try:
+                    _restored = json.loads(_restore_file.read())
+                    _hub_save(_restored)
+                    st.session_state["hub_data"] = _restored
+                    _hub = _restored
+                    st.success(f"✅ Restored — {len(_restored.get('pdf',[]))} PDF · "
+                               f"{len(_restored.get('portfolio',[]))} portfolio · "
+                               f"{len(_restored.get('watchlist',[]))} watchlist stocks")
+                    st.rerun()
+                except Exception as _re:
+                    st.error(f"Could not restore: {_re}")
 
     # ── INDmoney Live Connection ─────────────────────────────────────────────
     st.markdown("### 🔗 INDmoney Live Sync")
