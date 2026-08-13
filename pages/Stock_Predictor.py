@@ -15341,8 +15341,39 @@ with main_tab7:
         if not _dlog:
             st.info("No entries yet. Run analysis and click **Sync BUY Picks → Decision Log**.")
         else:
+            # ── Backup / Restore ──────────────────────────────────────────────
+            with st.expander(f"💾 Backup & Restore — {len(_dlog)} entries saved", expanded=False):
+                _dl_bk1, _dl_bk2 = st.columns(2)
+                with _dl_bk1:
+                    st.caption("Download decision log — re-upload after server restart.")
+                    _dlog_dl_bytes = json.dumps(_dlog, indent=2, default=str).encode()
+                    st.download_button(
+                        "⬇️ Download Decision Log",
+                        data=_dlog_dl_bytes,
+                        file_name=f"decision_log_{datetime.datetime.now().strftime('%Y%m%d')}.json",
+                        mime="application/json",
+                        use_container_width=True,
+                    )
+                with _dl_bk2:
+                    st.caption("Restore from a previously downloaded backup.")
+                    _dlog_restore_file = st.file_uploader(
+                        "Upload backup JSON", type=["json"], key="dlog_restore_upload"
+                    )
+                    if _dlog_restore_file:
+                        try:
+                            _dlog_restored = json.loads(_dlog_restore_file.read())
+                            if not isinstance(_dlog_restored, list):
+                                st.error("Invalid format — expected a list of log entries.")
+                            else:
+                                _dlog_save(_dlog_restored)
+                                st.session_state["decision_log"] = _dlog_restored
+                                st.success(f"✅ Restored {len(_dlog_restored)} entries.")
+                                st.rerun()
+                        except Exception as _dre:
+                            st.error(f"Could not restore: {_dre}")
+
             # ── Update Yesterday's Results button ─────────────────────────────
-            _upd_col1, _upd_col2, _upd_col3 = st.columns([2, 2, 3])
+            _upd_col1, _upd_col2 = st.columns([2, 2])
             with _upd_col1:
                 _update_btn = st.button(
                     "🔄 Update Yesterday's Results",
@@ -15353,15 +15384,6 @@ with main_tab7:
                 _clear_log_btn = st.button(
                     "🗑 Clear Entire Log",
                     key="dlog_clear",
-                    use_container_width=True,
-                )
-            with _upd_col3:
-                _dlog_dl_bytes = json.dumps(_dlog, indent=2, default=str).encode()
-                st.download_button(
-                    "⬇️ Export Log as JSON",
-                    data=_dlog_dl_bytes,
-                    file_name=f"decision_log_{datetime.datetime.now().strftime('%Y%m%d')}.json",
-                    mime="application/json",
                     use_container_width=True,
                 )
 
