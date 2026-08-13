@@ -7269,6 +7269,50 @@ with main_tab1:
                 st.info("No recent news found for this ticker.")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def discover_industry_stocks_ai(industry_name, industry_cfg, market_hint, gemini_key):
+    """Use Gemini to discover lesser-known companies in the industry."""
+    if not gemini_key:
+        return []
+    try:
+        from google import genai as genai_sdk
+        client = genai_sdk.Client(api_key=gemini_key)
+
+        seeds = industry_cfg.get("seeds_us", []) + industry_cfg.get("seeds_in", [])
+        seed_str = ", ".join(seeds[:6]) if seeds else "none"
+
+        prompt = f"""You are a research analyst specialising in undiscovered small-cap stocks.
+
+Industry: {industry_name}
+Known seed stocks: {seed_str}
+
+Find 15 LESSER-KNOWN, UNDER-COVERED companies (not the obvious large-caps) that:
+1. Are directly involved in {industry_name}
+2. Have market cap BELOW $3 billion
+3. Are publicly listed (provide valid stock ticker symbols)
+4. Have real revenue (not just ideas/patents)
+5. Are NOT well-known to most retail investors
+
+Market preference: {"India (NSE/BSE, use .NS suffix)" if market_hint == "india"
+                    else "US (NYSE/NASDAQ)" if market_hint == "us" else "Both US and India"}
+
+Return ONLY a JSON array of objects with fields: symbol, name, reason
+Example: [{{"symbol": "ARQQ", "name": "Arqit Quantum", "reason": "Quantum encryption SaaS, <5 analysts"}}]
+Return ONLY the JSON array, no other text."""
+
+        resp = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        text = resp.text.strip()
+        if "[" in text:
+            text = text[text.index("["):text.rindex("]")+1]
+        items = json.loads(text)
+        return [{"symbol": i.get("symbol","").strip().upper(),
+                 "name":   i.get("name",""),
+                 "reason": i.get("reason","")}
+                for i in items if i.get("symbol")]
+    except Exception:
+        return []
+
+
 with main_tab2:  # ← replacement block starts here
     for _tab2_once in [True]:
         # ── Tab 2 sub-nav ─────────────────────────────────────────────────────────
@@ -12443,51 +12487,6 @@ def compute_10x_potential(gem):
     )
 
     return lines
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def discover_industry_stocks_ai(industry_name, industry_cfg, market_hint, gemini_key):
-    """Use Gemini to discover lesser-known companies in the industry."""
-    if not gemini_key:
-        return []
-    try:
-        from google import genai as genai_sdk
-        client = genai_sdk.Client(api_key=gemini_key)
-
-        seeds = industry_cfg.get("seeds_us", []) + industry_cfg.get("seeds_in", [])
-        seed_str = ", ".join(seeds[:6]) if seeds else "none"
-
-        prompt = f"""You are a research analyst specialising in undiscovered small-cap stocks.
-
-Industry: {industry_name}
-Known seed stocks: {seed_str}
-
-Find 15 LESSER-KNOWN, UNDER-COVERED companies (not the obvious large-caps) that:
-1. Are directly involved in {industry_name}
-2. Have market cap BELOW $3 billion
-3. Are publicly listed (provide valid stock ticker symbols)
-4. Have real revenue (not just ideas/patents)
-5. Are NOT well-known to most retail investors
-
-Market preference: {"India (NSE/BSE, use .NS suffix)" if market_hint == "india"
-                    else "US (NYSE/NASDAQ)" if market_hint == "us" else "Both US and India"}
-
-Return ONLY a JSON array of objects with fields: symbol, name, reason
-Example: [{{"symbol": "ARQQ", "name": "Arqit Quantum", "reason": "Quantum encryption SaaS, <5 analysts"}}]
-Return ONLY the JSON array, no other text."""
-
-        resp = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-        text = resp.text.strip()
-        # Extract JSON
-        if "[" in text:
-            text = text[text.index("["):text.rindex("]")+1]
-        items = json.loads(text)
-        return [{"symbol": i.get("symbol","").strip().upper(),
-                 "name":   i.get("name",""),
-                 "reason": i.get("reason","")}
-                for i in items if i.get("symbol")]
-    except Exception:
-        return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
