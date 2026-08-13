@@ -14765,9 +14765,9 @@ with main_tab7:
     _selected_map  = {}
 
     if not _hub_all:
-        if _selected_syms_fallback:
+        if _selected_syms:
             st.warning(
-                f"⚠️ Your stock list ({len(_selected_syms_fallback)} stocks) is loaded from the last session. "
+                f"⚠️ Your stock list ({len(_selected_syms)} stocks) is loaded from the last session. "
                 f"Upload your backup JSON above to restore the full list, or proceed to run analysis on the cached selection."
             )
         else:
