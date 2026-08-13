@@ -1551,6 +1551,7 @@ def _safe_float(v, default=None):
         return default
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_stock_features(sym):
     """
     Compute all 4-layer features for a single stock.
@@ -1736,6 +1737,14 @@ def fetch_stock_features(sym):
     }
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_yf_info(sym: str) -> dict:
+    try:
+        return yf.Ticker(sym).info or {}
+    except Exception:
+        return {}
+
+
 def enrich_with_fundamentals(f):
     """
     Fetch yfinance .info for a single stock and merge into feature dict.
@@ -1744,7 +1753,7 @@ def enrich_with_fundamentals(f):
     """
     sym = f.get("symbol", "")
     try:
-        info = yf.Ticker(sym).info or {}
+        info = _fetch_yf_info(sym)
 
         def sf(key):
             return _safe_float(info.get(key))
