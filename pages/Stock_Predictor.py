@@ -446,7 +446,7 @@ def _indmoney_exchange_code(code, code_verifier):
         )
         if resp.status_code == 200:
             tok = resp.json()
-            tok["saved_at"] = str(datetime.datetime.now())
+            tok["saved_at"] = str(datetime.datetime.datetime.now())
             _indmoney_token_save(tok)
             return tok, None
         return None, f"Token exchange failed: {resp.status_code} {resp.text}"
@@ -470,7 +470,7 @@ def _indmoney_refresh_token(refresh_tok):
         )
         if resp.status_code == 200:
             tok = resp.json()
-            tok["saved_at"] = str(datetime.datetime.now())
+            tok["saved_at"] = str(datetime.datetime.datetime.now())
             _indmoney_token_save(tok)
             return tok, None
         return None, f"Refresh failed: {resp.status_code} {resp.text}"
@@ -642,6 +642,7 @@ WATCHLIST_FILE      = Path("./watchlist.json")
 PORTFOLIO_FILE      = Path("./portfolio_holdings.json")
 _DATA_DIR           = Path("/data") if Path("/data").exists() else Path(".")
 HUB_FILE            = _DATA_DIR / "my_stocks_hub.json"
+DECISION_LOG_FILE   = _DATA_DIR / "decision_log.json"
 INDMONEY_TOKEN_FILE = Path("./indmoney_token.json")
 PAPER_TRADES_FILE = Path("./paper_trades.json")
 PRICE_HISTORY_FILE = Path("./price_history.json")
@@ -3333,7 +3334,7 @@ def log_prediction(f, mc_result, bucket_key, score, percentile_class,
 
     entry = {
         "id":          str(uuid.uuid4())[:8],
-        "logged_at":   datetime.datetime.now().isoformat(),
+        "logged_at":   datetime.datetime.datetime.now().isoformat(),
         "symbol":      f["symbol"],
         "name":        f.get("name", f["symbol"]),
         "bucket":      bucket_key,
@@ -3417,7 +3418,7 @@ def validate_predictions():
 
             actual_ret   = (curr_price / entry_price) - 1
             logged_dt    = datetime.datetime.fromisoformat(pred["logged_at"])
-            days_elapsed = (datetime.datetime.now() - logged_dt).days
+            days_elapsed = (datetime.datetime.datetime.now() - logged_dt).days
             stop         = float(pred["stop_loss"])
 
             if curr_price <= stop:
@@ -3446,7 +3447,7 @@ def validate_predictions():
 
                 checks.append({
                     "horizon":       horizon,
-                    "checked_at":    datetime.datetime.now().isoformat(),
+                    "checked_at":    datetime.datetime.datetime.now().isoformat(),
                     "actual_ret":    round(actual_ret * 100, 2),
                     "predicted_ret": pred["targets"][horizon]["return_pct"],
                     "result":        result,
@@ -3529,11 +3530,11 @@ def fetch_prediction_movements(sym, logged_at_str, entry_price):
 
 def _next_n_trading_days(start_date, n):
     """Return the next n weekday dates after start_date (no holiday adjustment)."""
-    days, d = [], start_date + datetime.timedelta(days=1)
+    days, d = [], start_date + datetime.datetime.timedelta(days=1)
     while len(days) < n:
         if d.weekday() < 5:   # Mon–Fri
             days.append(d)
-        d += datetime.timedelta(days=1)
+        d += datetime.datetime.timedelta(days=1)
     return days
 
 
@@ -3612,7 +3613,7 @@ def build_watchlist_entry(sym, curr_sym):
         "symbol":    sym,
         "name":      f.get("name") or sym,
         "currency":  curr_sym,
-        "added_at":  datetime.datetime.now().strftime("%d %b %Y %H:%M"),
+        "added_at":  datetime.datetime.datetime.now().strftime("%d %b %Y %H:%M"),
         "price":     price,
         "entry":     mc["entry"]     if mc else price,
         "stop_loss": mc["stop_loss"] if mc else round(price * 0.93, 2),
@@ -8388,7 +8389,7 @@ with main_tab2:  # ← replacement block starts here
                     "alloc":          alloc,
                     "port_size":      portfolio_size,
                     "port_curr":      port_curr,
-                    "run_at":         datetime.datetime.now().strftime("%d %b %Y %H:%M"),
+                    "run_at":         datetime.datetime.datetime.now().strftime("%d %b %Y %H:%M"),
                     "top_shorts":     top_shorts,
                     "regime":         _t2_rd,
                     "objective_mode": objective_mode,
@@ -14068,7 +14069,7 @@ with main_tab6:
     # ── UPDATE: Run predictions ───────────────────────────────────────────────
     if _pt_update and _pt_watchlist:
         today_str = str(datetime.date.today())
-        yesterday_str = str(datetime.date.today() - datetime.timedelta(days=1))
+        yesterday_str = str(datetime.date.today() - datetime.datetime.timedelta(days=1))
 
         _pt_progress = st.progress(0, text="Fetching live prices…")
         _pt_status   = st.empty()
@@ -14327,6 +14328,20 @@ with main_tab6:
 with main_tab7:
 
     # ── Helpers ─────────────────────────────────────────────────────────────
+    def _dlog_load():
+        if DECISION_LOG_FILE.exists():
+            try:
+                return json.loads(DECISION_LOG_FILE.read_text())
+            except Exception:
+                pass
+        return []
+
+    def _dlog_save(rows):
+        try:
+            DECISION_LOG_FILE.write_text(json.dumps(rows, indent=2, default=str))
+        except Exception:
+            pass
+
     def _hub_load():
         if HUB_FILE.exists():
             try:
@@ -15216,18 +15231,260 @@ with main_tab7:
 
             # Add top 3 to prediction tracker
             st.markdown("---")
-            if _top3 and st.button("📓 Add Top 3 to Prediction Tracker", key="hub_add_pt", type="primary"):
-                _top3_syms = [r["symbol"] for r in _top3]
-                _pt_wl     = st.session_state.get("pt_watchlist", _ptd.get("watchlist", []))
-                _added     = []
-                for _ts in _top3_syms:
-                    if _ts not in _pt_wl:
-                        _pt_wl.append(_ts)
-                        _added.append(_ts)
-                if _added:
-                    st.session_state["pt_watchlist"] = _pt_wl
-                    _ptd["watchlist"] = _pt_wl
-                    _pt_save(_ptd)
-                    st.success(f"Added to Prediction Tracker: {', '.join(_added)}")
+            _act_cols = st.columns(2)
+            with _act_cols[0]:
+                if _top3 and st.button("📓 Add Top 3 to Prediction Tracker", key="hub_add_pt",
+                                        type="primary", use_container_width=True):
+                    _top3_syms = [r["symbol"] for r in _top3]
+                    _pt_wl     = st.session_state.get("pt_watchlist", _ptd.get("watchlist", []))
+                    _added     = []
+                    for _ts in _top3_syms:
+                        if _ts not in _pt_wl:
+                            _pt_wl.append(_ts)
+                            _added.append(_ts)
+                    if _added:
+                        st.session_state["pt_watchlist"] = _pt_wl
+                        _ptd["watchlist"] = _pt_wl
+                        _pt_save(_ptd)
+                        st.success(f"Added to Prediction Tracker: {', '.join(_added)}")
+                    else:
+                        st.info("All top 3 are already in Prediction Tracker.")
+            with _act_cols[1]:
+                _sync_log_btn = st.button(
+                    "📋 Sync BUY Picks → Decision Log",
+                    key="hub_sync_decision_log",
+                    type="primary",
+                    use_container_width=True,
+                    help="Auto-fills today's BUY-rated stocks into the Decision Log with all model signals.",
+                )
+
+            if _sync_log_btn:
+                _today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+                _dlog      = _dlog_load()
+                _existing_keys = {(r["date"], r["symbol"]) for r in _dlog}
+                _synced    = []
+
+                # Determine BUY stocks: score >= 55 OR hf_verdict contains BUY OR mtf_label contains BUY
+                _buy_stocks = [
+                    r for r in _res_ok
+                    if r["score"] >= 55
+                    or "BUY" in (r.get("hf_verdict") or "").upper()
+                    or "BUY" in (r.get("mtf_label") or "").upper()
+                ]
+
+                for _br in _buy_stocks:
+                    _key = (_today_str, _br["symbol"])
+                    if _key in _existing_keys:
+                        continue  # already logged today
+
+                    # Live trade signal verdict
+                    _ltv = _br.get("mtf_label", "—")
+                    if _br.get("mtf_buy_votes", 0) >= 2:
+                        _ltv = f"BUY ({_br['mtf_buy_votes']}/3 TF)"
+                    elif _br.get("mtf_sell_votes", 0) >= 2:
+                        _ltv = f"SELL ({_br['mtf_sell_votes']}/3 TF)"
+
+                    # Predicted price from Prediction Tracker
+                    _pred_px  = _br.get("pred_tomorrow")
+                    _close_px = _br.get("price", 0)
+                    _pred_gain_pct = (
+                        round((_pred_px - _close_px) / _close_px * 100, 2)
+                        if _pred_px and _close_px > 0 else None
+                    )
+
+                    # Fundamental verdict
+                    _fund_sc  = _br.get("fund_score", 0)
+                    if _fund_sc >= 65:   _fund_v = f"STRONG ({_fund_sc:.0f}/100)"
+                    elif _fund_sc >= 50: _fund_v = f"ADEQUATE ({_fund_sc:.0f}/100)"
+                    else:                _fund_v = f"WEAK ({_fund_sc:.0f}/100)"
+
+                    # Technical verdict (quant rules)
+                    _tech_sc  = _br.get("hf_score_100", 0)
+                    _tech_v   = _br.get("hf_verdict", "—") + f" ({_tech_sc:.0f}/100)"
+
+                    # Monte Carlo: use fib_target as proxy for MC upside
+                    _fib  = _br.get("fib_target", 0)
+                    _stop = _br.get("session_stop", 0)
+                    if _fib and _close_px > 0:
+                        _mc_upside = (_fib - _close_px) / _close_px * 100
+                        _mc_v = f"Target ₹{_fib:.2f} (+{_mc_upside:.1f}%) | Stop ₹{_stop:.2f}"
+                    else:
+                        _mc_v = "—"
+
+                    _dlog.append({
+                        "date":            _today_str,
+                        "symbol":          _br["symbol"],
+                        "sector":          _br.get("sector", "—"),
+                        "close_price":     round(_close_px, 2),
+                        "predicted_price": round(_pred_px, 2) if _pred_px else None,
+                        "pct_gain_suggested": _pred_gain_pct,
+                        "live_trade_signal":  _ltv,
+                        "fundamentals":    _fund_v,
+                        "technical":       _tech_v,
+                        "monte_carlo":     _mc_v,
+                        "composite_score": round(_br["score"], 1),
+                        "mode":            _disp_wp["label"],
+                        "did_we_buy":      "",       # user fills
+                        "actual_price":    None,     # filled by Update button
+                        "actual_gain_pct": None,     # filled by Update button
+                    })
+                    _synced.append(_br["symbol"])
+
+                _dlog_save(_dlog)
+                st.session_state["decision_log"] = _dlog
+                if _synced:
+                    st.success(f"✅ Synced {len(_synced)} BUY stocks to Decision Log: {', '.join(_synced)}")
                 else:
-                    st.info("All top 3 are already in Prediction Tracker.")
+                    st.info("No new BUY stocks to sync (already logged today or none qualify).")
+                st.rerun()
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # DECISION LOG
+        # ═══════════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("## 📋 Decision Log")
+        st.caption(
+            "Auto-filled when you click **Sync BUY Picks → Decision Log** after running analysis. "
+            "Edit 'Did we buy?' inline. Click **Update Yesterday's Results** to back-fill actual prices."
+        )
+
+        # Load log (localStorage bridge same as hub)
+        if "decision_log" not in st.session_state:
+            st.session_state["decision_log"] = _dlog_load()
+        _dlog = st.session_state["decision_log"]
+
+        # Persist to localStorage
+        _dlog_js = json.dumps(_dlog, default=str).replace("'", "\\'")
+        _stc.html(f"""
+        <script>
+        (function() {{
+            var data = '{_dlog_js}';
+            try {{
+                var parsed = JSON.parse(data);
+                if (parsed && parsed.length > 0) {{
+                    localStorage.setItem('stockdash_dlog', data);
+                }}
+            }} catch(e) {{}}
+        }})();
+        </script>
+        """, height=0)
+
+        if not _dlog:
+            st.info("No entries yet. Run analysis and click **Sync BUY Picks → Decision Log**.")
+        else:
+            # ── Update Yesterday's Results button ─────────────────────────────
+            _upd_col1, _upd_col2, _upd_col3 = st.columns([2, 2, 3])
+            with _upd_col1:
+                _update_btn = st.button(
+                    "🔄 Update Yesterday's Results",
+                    key="dlog_update_results",
+                    use_container_width=True,
+                )
+            with _upd_col2:
+                _clear_log_btn = st.button(
+                    "🗑 Clear Entire Log",
+                    key="dlog_clear",
+                    use_container_width=True,
+                )
+            with _upd_col3:
+                _dlog_dl_bytes = json.dumps(_dlog, indent=2, default=str).encode()
+                st.download_button(
+                    "⬇️ Export Log as JSON",
+                    data=_dlog_dl_bytes,
+                    file_name=f"decision_log_{datetime.datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+
+            if _clear_log_btn:
+                _dlog_save([])
+                st.session_state["decision_log"] = []
+                st.rerun()
+
+            if _update_btn:
+                _yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                _updated   = 0
+                for _row in _dlog:
+                    # Update rows that were logged yesterday (or any past date) with no actual price yet
+                    if _row.get("actual_price") is None and _row.get("date", "") < datetime.datetime.now().strftime("%Y-%m-%d"):
+                        try:
+                            _sym = _row["symbol"]
+                            _cur = float(yf.Ticker(_sym).fast_info.last_price or 0)
+                            if _cur > 0:
+                                _row["actual_price"] = round(_cur, 2)
+                                _entry = _row.get("close_price") or 0
+                                if _entry > 0:
+                                    _row["actual_gain_pct"] = round((_cur - _entry) / _entry * 100, 2)
+                                _updated += 1
+                        except Exception:
+                            pass
+                _dlog_save(_dlog)
+                st.session_state["decision_log"] = _dlog
+                st.success(f"✅ Updated actual prices for {_updated} past entries.")
+                st.rerun()
+
+            # ── Editable table ────────────────────────────────────────────────
+            import pandas as _dl_pd
+            _dl_df = _dl_pd.DataFrame([
+                {
+                    "Date":              r["date"],
+                    "Stock":             r["symbol"],
+                    "Sector":            r.get("sector", "—"),
+                    "Close Price":       r.get("close_price"),
+                    "Predicted Price":   r.get("predicted_price"),
+                    "% Gain Suggested":  r.get("pct_gain_suggested"),
+                    "Live Trade Signal": r.get("live_trade_signal", "—"),
+                    "Fundamentals":      r.get("fundamentals", "—"),
+                    "Technical":         r.get("technical", "—"),
+                    "Monte Carlo":       r.get("monte_carlo", "—"),
+                    "Score":             r.get("composite_score"),
+                    "Mode":              r.get("mode", "—"),
+                    "Did we buy?":       r.get("did_we_buy", ""),
+                    "Actual Price":      r.get("actual_price"),
+                    "Actual Gain %":     r.get("actual_gain_pct"),
+                }
+                for r in sorted(_dlog, key=lambda x: x.get("date",""), reverse=True)
+            ])
+
+            _edited_dlog = st.data_editor(
+                _dl_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                column_config={
+                    "Date":              st.column_config.TextColumn("Date", width=90),
+                    "Stock":             st.column_config.TextColumn("Stock", width=80),
+                    "Sector":            st.column_config.TextColumn("Sector", width=100),
+                    "Close Price":       st.column_config.NumberColumn("Close ₹", format="₹%.2f", width=85),
+                    "Predicted Price":   st.column_config.NumberColumn("Pred ₹", format="₹%.2f", width=85),
+                    "% Gain Suggested":  st.column_config.NumberColumn("% Gain Sug.", format="%.2f%%", width=90),
+                    "Live Trade Signal": st.column_config.TextColumn("Live Signal", width=120),
+                    "Fundamentals":      st.column_config.TextColumn("Fundamentals", width=140),
+                    "Technical":         st.column_config.TextColumn("Technical", width=140),
+                    "Monte Carlo":       st.column_config.TextColumn("Monte Carlo", width=160),
+                    "Score":             st.column_config.NumberColumn("Score", format="%.1f", width=60),
+                    "Mode":              st.column_config.TextColumn("Mode", width=80),
+                    "Did we buy?":       st.column_config.SelectboxColumn(
+                                             "Did we buy?", width=100,
+                                             options=["", "Yes", "No", "Partial"],
+                                         ),
+                    "Actual Price":      st.column_config.NumberColumn("Actual ₹", format="₹%.2f", width=85),
+                    "Actual Gain %":     st.column_config.NumberColumn("Actual Gain%", format="%.2f%%", width=100),
+                },
+                disabled=["Date","Stock","Sector","Close Price","Predicted Price",
+                          "% Gain Suggested","Live Trade Signal","Fundamentals",
+                          "Technical","Monte Carlo","Score","Mode",
+                          "Actual Price","Actual Gain %"],
+                key="dlog_editor",
+            )
+
+            # Save "Did we buy?" edits back to log
+            if st.button("💾 Save 'Did we buy?' edits", key="dlog_save_edits", type="primary"):
+                _sorted_log = sorted(_dlog, key=lambda x: x.get("date",""), reverse=True)
+                for _i, _row in enumerate(_sorted_log):
+                    if _i < len(_edited_dlog):
+                        _row["did_we_buy"] = _edited_dlog.iloc[_i]["Did we buy?"] or ""
+                _dlog_save(_sorted_log)
+                st.session_state["decision_log"] = _sorted_log
+                st.success("Saved.")
+                st.rerun()
