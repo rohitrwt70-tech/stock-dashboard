@@ -14760,8 +14760,18 @@ with main_tab7:
             _seen_merge[_s]["avg_price"] = _e["avg_price"]
     _hub_all = list(_seen_merge.values())
 
+    # These are populated in the else block below; initialise here so Step 3 always has them
+    _selected_syms = st.session_state.get("hub_selected_syms", [])
+    _selected_map  = {}
+
     if not _hub_all:
-        st.info("No stocks loaded yet. Upload a file or add tickers manually above.")
+        if _selected_syms_fallback:
+            st.warning(
+                f"⚠️ Your stock list ({len(_selected_syms_fallback)} stocks) is loaded from the last session. "
+                f"Upload your backup JSON above to restore the full list, or proceed to run analysis on the cached selection."
+            )
+        else:
+            st.info("No stocks loaded yet. Upload a file or add tickers manually above.")
     else:
         # Build a preview dataframe with checkboxes via data_editor
         import pandas as _prev_pd
@@ -14791,8 +14801,13 @@ with main_tab7:
             key="hub_stock_editor",
         )
 
-        # Stocks user kept checked
+        # Stocks user kept checked — persist across reruns
         _selected_syms = list(_edited[_edited["Include"] == True]["Symbol"])
+        if _selected_syms:
+            st.session_state["hub_selected_syms"] = _selected_syms
+        elif st.session_state.get("hub_selected_syms"):
+            # Fallback: use last known selection (e.g. after refresh before editor renders)
+            _selected_syms = st.session_state["hub_selected_syms"]
         _selected_map  = {e["symbol"]: e for e in _hub_all}
 
         st.caption(f"**{len(_selected_syms)} stocks selected** for analysis.")
@@ -14804,713 +14819,713 @@ with main_tab7:
         _mc3.metric("From PDF",        sum(1 for s in _selected_syms if _selected_map.get(s,{}).get("source")=="pdf"))
         _mc4.metric("Manual",          sum(1 for s in _selected_syms if _selected_map.get(s,{}).get("source")=="manual"))
 
-        # ── STEP 3: Run Analysis ─────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("### 🚀 Step 3 — Run Analysis")
+    # ── STEP 3: Run Analysis ─────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🚀 Step 3 — Run Analysis")
 
-        if not _selected_syms:
-            st.warning("No stocks selected. Check at least one stock above.")
-        else:
-            st.caption("Choose your trading style — weights the 4 scoring layers accordingly.")
-            _mode_cols = st.columns(3)
-            with _mode_cols[0]:
-                _btn_intraday = st.button(
-                    f"⚡ Intraday\n{len(_selected_syms)} stocks",
-                    key="hub_run_intraday",
-                    type="primary",
-                    use_container_width=True,
-                    help="MTF 40% · Quant 35% · Pred Tracker 15% · Fundamentals 10%",
-                )
-            with _mode_cols[1]:
-                _btn_swing = st.button(
-                    f"📈 Swing (2-10d)\n{len(_selected_syms)} stocks",
-                    key="hub_run_swing",
-                    type="primary",
-                    use_container_width=True,
-                    help="Fundamentals 40% · Quant 30% · Pred Tracker 20% · MTF 10%",
-                )
-            with _mode_cols[2]:
-                _btn_both = st.button(
-                    f"⚖️ Both\n{len(_selected_syms)} stocks",
-                    key="hub_run_both",
-                    type="primary",
-                    use_container_width=True,
-                    help="Balanced: MTF 25% · Quant 25% · Fundamentals 30% · Pred Tracker 20%",
-                )
-
-            # Weights per mode
-            _HUB_WEIGHT_PRESETS = {
-                "intraday": {"w_mtf": 0.40, "w_hf": 0.35, "w_fund": 0.10, "w_pt": 0.15,
-                             "label": "⚡ Intraday"},
-                "swing":    {"w_mtf": 0.10, "w_hf": 0.30, "w_fund": 0.40, "w_pt": 0.20,
-                             "label": "📈 Swing"},
-                "both":     {"w_mtf": 0.25, "w_hf": 0.25, "w_fund": 0.30, "w_pt": 0.20,
-                             "label": "⚖️ Both"},
-            }
-
-            _run_mode = None
-            if _btn_intraday: _run_mode = "intraday"
-            elif _btn_swing:  _run_mode = "swing"
-            elif _btn_both:   _run_mode = "both"
-
-            _run_btn = _run_mode is not None
-            if _run_btn:
-                st.session_state["hub_run_mode"] = _run_mode
-            _active_mode = st.session_state.get("hub_run_mode", "both")
-            _wp = _HUB_WEIGHT_PRESETS[_active_mode]
-
-            if _run_btn:
-                st.session_state["hub_analysis_done"] = False
-                st.session_state["hub_results"] = []
-
-                _hub_progress = st.progress(0, text="Starting…")
-                _hub_status   = st.empty()
-                _hub_results  = []
-                _total        = len(_selected_syms)
-                _ptd_hub      = _pt_load()
-
-                # ── helper: MTF signal score (0-100) ─────────────────────────
-                def _hub_mtf_score(sym):
-                    """Fetch 1m/5m/15m, return (mtf_score 0-100, buy_votes, sell_votes, confluence_label)."""
-                    _votes = []
-                    for _iv, _per in [("1m","1d"), ("5m","5d"), ("15m","5d")]:
-                        try:
-                            _d = _fetch_live_candles(sym, _iv, _per)
-                            if _d is None or len(_d) < 10:
-                                continue
-                            _s = _compute_live_signals(_d)
-                            _rsi = _s.get("rsi") or 50
-                            _mh  = _s.get("macd_hist") or 0
-                            _bbp = _s.get("bb_pct") or 50
-                            _buy  = (1 if _rsi < 55 else 0) + (1 if _mh > 0 else 0) + (1 if _bbp < 70 else 0)
-                            _sell = (1 if _rsi > 65 else 0) + (1 if _mh < 0 else 0) + (1 if _bbp > 75 else 0)
-                            if _s.get("signal") == "EXIT_NOW":
-                                _votes.append("SELL")
-                            elif _sell >= 2:
-                                _votes.append("SELL")
-                            elif _buy >= 2:
-                                _votes.append("BUY")
-                            else:
-                                _votes.append("NEUTRAL")
-                        except Exception:
-                            pass
-                    if not _votes:
-                        return 50, 0, 0, "NO DATA"
-                    _bv = _votes.count("BUY")
-                    _sv = _votes.count("SELL")
-                    # Score: 3 BUY=100, 2 BUY=75, 1 BUY=55, all NEUTRAL=50, 1 SELL=35, 2 SELL=20, 3 SELL=0
-                    _mtf_sc = max(0, min(100, 50 + (_bv - _sv) * 25))
-                    if _bv >= 2:   _lbl = "STRONG BUY"
-                    elif _bv == 1 and _sv == 0: _lbl = "MILD BUY"
-                    elif _sv >= 2: _lbl = "STRONG SELL"
-                    elif _sv == 1 and _bv == 0: _lbl = "MILD SELL"
-                    else:          _lbl = "MIXED / WAIT"
-                    return _mtf_sc, _bv, _sv, _lbl
-
-                # ── helper: fundamentals + score_stock layer (0-100) ──────────
-                def _hub_fundamental_score(sym):
-                    """Fetch 1y daily + yf.info → run full score_stock + DCF + MC engine.
-                    Returns (score 0-100, breakdown, features, fund_verdict, mc_verdict, mc_result)."""
-                    try:
-                        _f = fetch_stock_features(sym)
-                        if _f is None:
-                            return 50, {}, {}, "—", "—", None
-                        _f = enrich_with_fundamentals(_f)
-                        _ranked = normalise_universe({sym: _f})
-                        _bkt    = classify_bucket(_f, _ranked)
-                        _sc, _bkdn = score_stock(_f, _ranked, _bkt)
-
-                        # Fundamental verdict from score + DCF
-                        _dcf = compute_dcf(_f)
-                        if _dcf and _dcf.get("verdict"):
-                            _fund_v = _dcf["verdict"]  # STRONG BUY / BUY / HOLD / SELL / STRONG SELL
-                        else:
-                            # Fall back to score_stock score
-                            if _sc >= 70:   _fund_v = "STRONG BUY"
-                            elif _sc >= 58: _fund_v = "BUY"
-                            elif _sc >= 44: _fund_v = "HOLD"
-                            elif _sc >= 30: _fund_v = "SELL"
-                            else:           _fund_v = "STRONG SELL"
-
-                        # Monte Carlo verdict
-                        _mc = None
-                        _mc_v = "—"
-                        try:
-                            _mc = monte_carlo_targets(_f, n_simulations=2000)
-                            if _mc:
-                                _mc3m_prob = _mc.get("3M", {}).get("prob_up", 50)
-                                _mc3m_ret  = _mc.get("3M", {}).get("ret_base", 0)
-                                _mc_bullish = _mc3m_prob >= 60 and _mc3m_ret > 0
-                                _mc_bearish = _mc3m_prob < 45 or _mc3m_ret < -5
-                                if _mc_bullish and _sc >= 65:   _mc_v = "STRONG BUY"
-                                elif _mc_bullish:               _mc_v = "BUY"
-                                elif _mc_bearish:               _mc_v = "SELL"
-                                else:                           _mc_v = "HOLD"
-                        except Exception:
-                            pass
-
-                        return _sc, _bkdn, _f, _fund_v, _mc_v, _mc
-                    except Exception:
-                        return 50, {}, {}, "—", "—", None
-
-                # ── main analysis loop ────────────────────────────────────────
-                _hub_feat_map = {}  # sym → features (for normalise later)
-                _hub_raw      = []  # partial results before final scoring
-
-                for _hi, _hsym in enumerate(_selected_syms):
-                    _hentry = _selected_map.get(_hsym, {"symbol": _hsym})
-                    _havg   = _hentry.get("avg_price", 0) or 0
-                    _pct_done = (_hi + 1) / _total
-                    _hub_progress.progress(_pct_done, text=f"[{_hi+1}/{_total}] {_hsym} — fetching data…")
-
-                    try:
-                        # Layer 1: intraday candles for live signals + HF rules
-                        _hdf5m = _fetch_live_candles(_hsym, "5m", "5d")
-                        if _hdf5m is None or len(_hdf5m) < 20:
-                            _hdf5m = _fetch_live_candles(_hsym, "1d", "3mo")
-                        if _hdf5m is None or len(_hdf5m) < 10:
-                            _hub_results.append({"symbol": _hsym, "error": "No price data", "score": -999,
-                                                 "avg_price": _havg, "source": _hentry.get("source","—")})
-                            continue
-
-                        _hub_status.caption(f"⚙️ {_hsym} — computing live signals…")
-                        _hsig      = _compute_live_signals(_hdf5m)
-                        _hhfr      = _hedge_fund_rules(_hdf5m)
-                        _hres, _hsup = _compute_sr_levels(_hdf5m)
-                        _htgt      = _compute_targets(_hdf5m, _hres, _hsup)
-
-                        _hclose  = float(_hdf5m["Close"].dropna().iloc[-1])
-                        _hrsi    = _hsig.get("rsi") or 50
-                        _hmh     = _hsig.get("macd_hist") or 0
-                        _hbbp    = _hsig.get("bb_pct") or 50
-                        _hvol    = _hsig.get("vol_z") or 0
-                        _hhf_sc  = _hhfr.get("score", 0)
-                        _hsig_type = _hsig.get("signal", "HOLD")
-
-                        # Layer 1 score: HF quant rules → normalise to 0-100
-                        # _hhf_sc range is roughly -12 to +12; map to 0-100
-                        _hf_score_100 = float(np.clip((_hhf_sc + 12) / 24 * 100, 0, 100))
-
-                        # Layer 2: multi-timeframe confluence
-                        _hub_status.caption(f"⚙️ {_hsym} — multi-timeframe confluence…")
-                        _mtf_sc, _mtf_bv, _mtf_sv, _mtf_lbl = _hub_mtf_score(_hsym)
-
-                        # Layer 3: fundamentals + full score_stock + DCF + MC (0-100)
-                        _hub_status.caption(f"⚙️ {_hsym} — fundamental + Monte Carlo analysis…")
-                        _fund_sc, _fund_bkdn, _hfeats, _fund_verdict, _mc_verdict, _hmc = _hub_fundamental_score(_hsym)
-
-                        # Layer 4: Prediction tracker signal
-                        _hpt_data     = _ptd_hub.get("records", {}).get(_hsym, [])
-                        _hpt_pred_tmr = None
-                        _hpt_accuracy = None
-                        _pt_score_100 = 50  # neutral default
-                        if _hpt_data:
-                            for _hpr in sorted(_hpt_data, key=lambda x: x.get("date",""), reverse=True):
-                                if _hpr.get("pred_tomorrow"):
-                                    _hpt_pred_tmr = _hpr["pred_tomorrow"]
-                                    break
-                            _hpt_correct = [r for r in _hpt_data if r.get("actual") and r.get("pred_today")]
-                            if _hpt_correct:
-                                _hpt_right = sum(1 for r in _hpt_correct
-                                                 if (r["pred_today"] > r.get("actual_prev", r["actual"])) ==
-                                                    (r["actual"] > r.get("actual_prev", r["actual"])))
-                                _hpt_accuracy = _hpt_right / len(_hpt_correct) * 100
-                            if _hpt_pred_tmr and _hclose > 0:
-                                _pt_upside = (_hpt_pred_tmr - _hclose) / _hclose
-                                # Upside >3% bullish, <-3% bearish, accuracy-weighted
-                                _acc_w = (_hpt_accuracy / 100) if _hpt_accuracy else 0.5
-                                _pt_score_100 = float(np.clip(50 + _pt_upside * 300 * _acc_w, 0, 100))
-
-                        # ── Weighted composite score (0-100) ──────────────────
-                        _composite = (
-                            _hf_score_100 * _wp["w_hf"]   +
-                            _mtf_sc       * _wp["w_mtf"]  +
-                            _fund_sc      * _wp["w_fund"]  +
-                            _pt_score_100 * _wp["w_pt"]
-                        )
-
-                        # Hard penalty: EXIT_NOW signal drops score significantly
-                        if _hsig_type == "EXIT_NOW":
-                            _composite = max(0, _composite - 25)
-                        elif _hsig_type == "WATCH":
-                            _composite = max(0, _composite - 8)
-                        elif _hsig_type == "HOLD_BUY_DIP":
-                            _composite = min(100, _composite + 5)
-
-                        _hpnl = ((_hclose - _havg) / _havg * 100) if _havg > 0 else None
-
-                        _hub_results.append({
-                            "symbol":        _hsym,
-                            "price":         _hclose,
-                            "avg_price":     _havg,
-                            "pnl_pct":       _hpnl,
-                            "score":         round(_composite, 1),
-                            # Layer breakdown
-                            "hf_score_100":  round(_hf_score_100, 1),
-                            "mtf_score":     round(_mtf_sc, 1),
-                            "fund_score":    round(_fund_sc, 1),
-                            "pt_score":      round(_pt_score_100, 1),
-                            # Sub-scores from score_stock
-                            "tech_score":    _fund_bkdn.get("technical", 0),
-                            "fund_sub":      _fund_bkdn.get("fundamental", 0),
-                            "risk_score":    _fund_bkdn.get("risk", 0),
-                            "sent_score":    _fund_bkdn.get("sentiment", 0),
-                            "fund_verdict":  _fund_verdict,
-                            "mc_verdict":    _mc_verdict,
-                            # Raw indicators
-                            "rsi":           _hrsi,
-                            "macd_hist":     _hmh,
-                            "bb_pct":        _hbbp,
-                            "vol_z":         _hvol,
-                            "hf_score":      _hhf_sc,
-                            "signal":        _hsig_type,
-                            "hf_verdict":    _hhfr.get("verdict", "—"),
-                            "mtf_label":     _mtf_lbl,
-                            "mtf_buy_votes": _mtf_bv,
-                            "mtf_sell_votes":_mtf_sv,
-                            # Fundamental data
-                            "pe":            _hfeats.get("pe"),
-                            "roe":           _hfeats.get("roe"),
-                            "net_margin":    _hfeats.get("net_margin"),
-                            "rev_growth":    _hfeats.get("rev_growth"),
-                            "beta":          _hfeats.get("beta"),
-                            "analyst_upside":_hfeats.get("analyst_upside"),
-                            "sector":        _hfeats.get("sector", "—"),
-                            # Targets
-                            "pred_tomorrow": _hpt_pred_tmr,
-                            "pt_accuracy":   _hpt_accuracy,
-                            "fib_target":    _htgt.get("fib_100", 0),
-                            "session_stop":  _htgt.get("session_stop", 0),
-                            "source":        _hentry.get("source", "—"),
-                            "error":         None,
-                        })
-
-                    except Exception as _herr:
-                        _hub_results.append({"symbol": _hsym, "error": str(_herr), "score": -999,
-                                             "avg_price": _havg, "source": _hentry.get("source","—")})
-
-                _hub_progress.empty()
-                _hub_status.empty()
-                _hub_results.sort(key=lambda x: x["score"], reverse=True)
-                st.session_state["hub_results"]       = _hub_results
-                st.session_state["hub_analysis_done"] = True
-                st.rerun()
-
-        # ── Display results ──────────────────────────────────────────────────
-        if st.session_state.get("hub_analysis_done") and st.session_state.get("hub_results"):
-            _res_all = st.session_state["hub_results"]
-            _res_ok  = [r for r in _res_all if not r.get("error")]
-            _res_err = [r for r in _res_all if r.get("error")]
-
-            # Top 3
-            _disp_mode = st.session_state.get("hub_run_mode", "both")
-            _disp_wp   = _HUB_WEIGHT_PRESETS[_disp_mode]
-            st.markdown("---")
-            st.markdown(f"### 🏆 Top 3 Picks — {_disp_wp['label']} Mode")
-            st.caption(
-                f"Score 0-100 · Mode: **{_disp_wp['label']}** · "
-                f"MTF {int(_disp_wp['w_mtf']*100)}% · "
-                f"Quant {int(_disp_wp['w_hf']*100)}% · "
-                f"Fundamentals {int(_disp_wp['w_fund']*100)}% · "
-                f"Pred Tracker {int(_disp_wp['w_pt']*100)}%"
+    if not _selected_syms:
+        st.warning("No stocks selected. Check at least one stock above.")
+    else:
+        st.caption("Choose your trading style — weights the 4 scoring layers accordingly.")
+        _mode_cols = st.columns(3)
+        with _mode_cols[0]:
+            _btn_intraday = st.button(
+                f"⚡ Intraday\n{len(_selected_syms)} stocks",
+                key="hub_run_intraday",
+                type="primary",
+                use_container_width=True,
+                help="MTF 40% · Quant 35% · Pred Tracker 15% · Fundamentals 10%",
             )
-            _top3  = _res_ok[:3]
-            _medal = ["🥇", "🥈", "🥉"]
-            for _ti, _tr in enumerate(_top3):
-                _tc = "#00c853" if _tr["score"] >= 65 else "#ff9800" if _tr["score"] >= 45 else "#aaa"
-                _sig_emoji = {"EXIT_NOW":"🔴","WATCH":"🟡","HOLD":"🟢","HOLD_BUY_DIP":"🔵"}.get(_tr.get("signal",""),"⚪")
-                _pred_line = ""
-                if _tr.get("pred_tomorrow") and _tr.get("price"):
-                    _pd_chg = (_tr["pred_tomorrow"] - _tr["price"]) / _tr["price"] * 100
-                    _pd_col = "#00c853" if _pd_chg >= 0 else "#ff5252"
-                    _pd_acc = f" · accuracy {_tr['pt_accuracy']:.0f}%" if _tr.get("pt_accuracy") else ""
-                    _pred_line = (f"<div style='font-size:0.8rem;color:{_pd_col};margin-top:4px'>"
-                                  f"📓 PT signal: {_pd_chg:+.2f}% tomorrow "
-                                  f"(target ₹{_tr['pred_tomorrow']:.2f}){_pd_acc}</div>")
-                _pnl_line = ""
-                if _tr.get("pnl_pct") is not None:
-                    _pc = "#00c853" if _tr["pnl_pct"] >= 0 else "#ff5252"
-                    _pnl_line = (f"<div style='font-size:0.8rem;color:{_pc};margin-top:2px'>"
-                                 f"Your P&L: {_tr['pnl_pct']:+.2f}% · avg ₹{_tr['avg_price']:.2f}</div>")
+        with _mode_cols[1]:
+            _btn_swing = st.button(
+                f"📈 Swing (2-10d)\n{len(_selected_syms)} stocks",
+                key="hub_run_swing",
+                type="primary",
+                use_container_width=True,
+                help="Fundamentals 40% · Quant 30% · Pred Tracker 20% · MTF 10%",
+            )
+        with _mode_cols[2]:
+            _btn_both = st.button(
+                f"⚖️ Both\n{len(_selected_syms)} stocks",
+                key="hub_run_both",
+                type="primary",
+                use_container_width=True,
+                help="Balanced: MTF 25% · Quant 25% · Fundamentals 30% · Pred Tracker 20%",
+            )
 
-                # 4 score bars
-                def _bar(label, val, color="#4fc3f7"):
-                    _w = max(0, min(100, val or 0))
-                    return (f"<div style='margin-bottom:3px'>"
-                            f"<span style='font-size:0.7rem;color:#888;width:110px;display:inline-block'>{label}</span>"
-                            f"<span style='display:inline-block;width:{_w*1.2:.0f}px;height:7px;background:{color};"
-                            f"border-radius:3px;vertical-align:middle'></span>"
-                            f"<span style='font-size:0.7rem;color:#aaa;margin-left:4px'>{_w:.0f}</span></div>")
+        # Weights per mode
+        _HUB_WEIGHT_PRESETS = {
+            "intraday": {"w_mtf": 0.40, "w_hf": 0.35, "w_fund": 0.10, "w_pt": 0.15,
+                         "label": "⚡ Intraday"},
+            "swing":    {"w_mtf": 0.10, "w_hf": 0.30, "w_fund": 0.40, "w_pt": 0.20,
+                         "label": "📈 Swing"},
+            "both":     {"w_mtf": 0.25, "w_hf": 0.25, "w_fund": 0.30, "w_pt": 0.20,
+                         "label": "⚖️ Both"},
+        }
 
-                _bars = (
-                    _bar("Quant Rules",    _tr.get("hf_score_100",50), "#7c4dff") +
-                    _bar("Multi-TF",       _tr.get("mtf_score",50),    "#00bcd4") +
-                    _bar("Fundamentals",   _tr.get("fund_score",50),   "#ff9800") +
-                    _bar("Pred Tracker",   _tr.get("pt_score",50),     "#4caf50")
-                )
+        _run_mode = None
+        if _btn_intraday: _run_mode = "intraday"
+        elif _btn_swing:  _run_mode = "swing"
+        elif _btn_both:   _run_mode = "both"
 
-                # Verdict badges
-                def _verdict_badge(label, verdict):
-                    _vc = {"STRONG BUY":"#00c853","BUY":"#69f0ae","HOLD":"#ff9800",
-                           "SELL":"#ff5252","STRONG SELL":"#d50000"}.get(verdict, "#888")
-                    return (f"<span style='background:{_vc}22;border:1px solid {_vc};"
-                            f"border-radius:4px;padding:2px 7px;font-size:0.72rem;"
-                            f"color:{_vc};font-weight:700'>{label}: {verdict}</span>")
+        _run_btn = _run_mode is not None
+        if _run_btn:
+            st.session_state["hub_run_mode"] = _run_mode
+        _active_mode = st.session_state.get("hub_run_mode", "both")
+        _wp = _HUB_WEIGHT_PRESETS[_active_mode]
 
-                _fv = _tr.get("fund_verdict", "—")
-                _mv = _tr.get("mc_verdict", "—")
-                _hfv = _tr.get("hf_verdict", "—")
-                _verdict_row = (
-                    _verdict_badge("Fundamentals", _fv) + " &nbsp;" +
-                    _verdict_badge("Monte Carlo",  _mv) + " &nbsp;" +
-                    _verdict_badge("Quant Rules",  _hfv)
-                )
+        if _run_btn:
+            st.session_state["hub_analysis_done"] = False
+            st.session_state["hub_results"] = []
 
-                # Fundamental data chips
-                _pe_str  = f"P/E {_tr['pe']:.1f}" if _tr.get("pe") else ""
-                _roe_str = f"ROE {_tr['roe']*100:.0f}%" if _tr.get("roe") else ""
-                _mg_str  = f"Margin {_tr['net_margin']*100:.0f}%" if _tr.get("net_margin") else ""
-                _rg_str  = f"Rev↑ {_tr['rev_growth']*100:.0f}%" if _tr.get("rev_growth") else ""
-                _up_str  = f"Analyst ↑{_tr['analyst_upside']*100:.0f}%" if _tr.get("analyst_upside") else ""
-                _fund_chips = " · ".join(x for x in [_pe_str,_roe_str,_mg_str,_rg_str,_up_str] if x)
+            _hub_progress = st.progress(0, text="Starting…")
+            _hub_status   = st.empty()
+            _hub_results  = []
+            _total        = len(_selected_syms)
+            _ptd_hub      = _pt_load()
 
-                st.markdown(
-                    f"<div style='background:{_tc}18;border:2px solid {_tc};"
-                    f"border-radius:10px;padding:14px;margin-bottom:12px'>"
-                    f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
-                    f"<div>"
-                    f"<span style='font-size:1.5rem'>{_medal[_ti]}</span> "
-                    f"<span style='font-size:1.4rem;font-weight:900;color:{_tc}'>{_tr['symbol']}</span> "
-                    f"<span style='color:#888;font-size:0.8rem'> {_tr.get('sector','')}</span><br>"
-                    f"<span style='color:#888;font-size:0.82rem'>{_sig_emoji} Live: {_tr.get('signal','')} · MTF: {_tr.get('mtf_label','—')}</span>"
-                    f"</div>"
-                    f"<div style='text-align:right'>"
-                    f"<div style='font-size:1.5rem;font-weight:900;color:{_tc}'>{_tr['score']:.0f}<span style='font-size:0.9rem;color:#888'>/100</span></div>"
-                    f"<div style='font-size:0.78rem;color:#888'>₹{_tr['price']:.2f} · Stop ₹{_tr.get('session_stop',0):.2f} · Target ₹{_tr.get('fib_target',0):.2f}</div>"
-                    f"</div></div>"
-                    f"<div style='margin-top:8px'>{_verdict_row}</div>"
-                    f"<div style='margin-top:10px'>{_bars}</div>"
-                    f"<div style='margin-top:6px;font-size:0.75rem;color:#777'>{_fund_chips}</div>"
-                    f"<div style='margin-top:4px;display:flex;flex-wrap:wrap;gap:6px;font-size:0.75rem;color:#aaa'>"
-                    f"<span>RSI {_tr.get('rsi',0):.0f}</span>"
-                    f"<span>MACD {_tr.get('macd_hist',0):.4f}</span>"
-                    f"<span>BB {_tr.get('bb_pct',0):.0f}%</span>"
-                    f"<span>Vol {_tr.get('vol_z',0):.1f}σ</span>"
-                    f"<span>Beta {(_tr.get('beta') or 1):.2f}</span>"
-                    f"<span>MTF {_tr.get('mtf_buy_votes',0)}B/{_tr.get('mtf_sell_votes',0)}S</span>"
-                    f"</div>"
-                    f"{_pred_line}{_pnl_line}"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
+            # ── helper: MTF signal score (0-100) ─────────────────────────
+            def _hub_mtf_score(sym):
+                """Fetch 1m/5m/15m, return (mtf_score 0-100, buy_votes, sell_votes, confluence_label)."""
+                _votes = []
+                for _iv, _per in [("1m","1d"), ("5m","5d"), ("15m","5d")]:
+                    try:
+                        _d = _fetch_live_candles(sym, _iv, _per)
+                        if _d is None or len(_d) < 10:
+                            continue
+                        _s = _compute_live_signals(_d)
+                        _rsi = _s.get("rsi") or 50
+                        _mh  = _s.get("macd_hist") or 0
+                        _bbp = _s.get("bb_pct") or 50
+                        _buy  = (1 if _rsi < 55 else 0) + (1 if _mh > 0 else 0) + (1 if _bbp < 70 else 0)
+                        _sell = (1 if _rsi > 65 else 0) + (1 if _mh < 0 else 0) + (1 if _bbp > 75 else 0)
+                        if _s.get("signal") == "EXIT_NOW":
+                            _votes.append("SELL")
+                        elif _sell >= 2:
+                            _votes.append("SELL")
+                        elif _buy >= 2:
+                            _votes.append("BUY")
+                        else:
+                            _votes.append("NEUTRAL")
+                    except Exception:
+                        pass
+                if not _votes:
+                    return 50, 0, 0, "NO DATA"
+                _bv = _votes.count("BUY")
+                _sv = _votes.count("SELL")
+                # Score: 3 BUY=100, 2 BUY=75, 1 BUY=55, all NEUTRAL=50, 1 SELL=35, 2 SELL=20, 3 SELL=0
+                _mtf_sc = max(0, min(100, 50 + (_bv - _sv) * 25))
+                if _bv >= 2:   _lbl = "STRONG BUY"
+                elif _bv == 1 and _sv == 0: _lbl = "MILD BUY"
+                elif _sv >= 2: _lbl = "STRONG SELL"
+                elif _sv == 1 and _bv == 0: _lbl = "MILD SELL"
+                else:          _lbl = "MIXED / WAIT"
+                return _mtf_sc, _bv, _sv, _lbl
 
-            # Full table
-            st.markdown("---")
-            st.markdown(f"### 📋 All Stocks — Ranked by Composite Score ({_disp_wp['label']} Mode)")
-            import pandas as _hub_pd
-            _tbl = []
-            for _r in _res_ok:
-                _tbl.append({
-                    "Symbol":        _r["symbol"],
-                    "Score /100":    round(_r["score"], 1),
-                    "Quant":         round(_r.get("hf_score_100", 0), 1),
-                    "Multi-TF":      round(_r.get("mtf_score", 0), 1),
-                    "Fundamentals":  round(_r.get("fund_score", 0), 1),
-                    "Pred Tracker":  round(_r.get("pt_score", 0), 1),
-                    "Price":         f"₹{_r['price']:.2f}",
-                    "Fund. Verdict":  _r.get("fund_verdict","—"),
-                    "MC Verdict":    _r.get("mc_verdict","—"),
-                    "MTF Signal":    _r.get("mtf_label","—"),
-                    "HF Verdict":    _r.get("hf_verdict","—"),
-                    "RSI":           f"{_r.get('rsi',0):.0f}",
-                    "P/E":           f"{_r['pe']:.1f}" if _r.get("pe") else "—",
-                    "ROE":           f"{_r['roe']*100:.0f}%" if _r.get("roe") else "—",
-                    "Analyst ↑":     f"{_r['analyst_upside']*100:.0f}%" if _r.get("analyst_upside") else "—",
-                    "PT Tomorrow":   f"₹{_r['pred_tomorrow']:.2f}" if _r.get("pred_tomorrow") else "—",
-                    "PT Accuracy":   f"{_r['pt_accuracy']:.0f}%" if _r.get("pt_accuracy") else "—",
-                    "P&L":           f"{_r['pnl_pct']:+.1f}%" if _r.get("pnl_pct") is not None else "—",
-                    "Sector":        _r.get("sector","—"),
-                    "Source":        _r.get("source","—"),
-                })
-            if _tbl:
-                st.dataframe(_hub_pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
+            # ── helper: fundamentals + score_stock layer (0-100) ──────────
+            def _hub_fundamental_score(sym):
+                """Fetch 1y daily + yf.info → run full score_stock + DCF + MC engine.
+                Returns (score 0-100, breakdown, features, fund_verdict, mc_verdict, mc_result)."""
+                try:
+                    _f = fetch_stock_features(sym)
+                    if _f is None:
+                        return 50, {}, {}, "—", "—", None
+                    _f = enrich_with_fundamentals(_f)
+                    _ranked = normalise_universe({sym: _f})
+                    _bkt    = classify_bucket(_f, _ranked)
+                    _sc, _bkdn = score_stock(_f, _ranked, _bkt)
 
-            if _res_err:
-                with st.expander(f"⚠️ {len(_res_err)} stocks with no data"):
-                    for _e in _res_err:
-                        st.caption(f"{_e['symbol']}: {_e['error']}")
-
-            # Add top 3 to prediction tracker
-            st.markdown("---")
-            _act_cols = st.columns(2)
-            with _act_cols[0]:
-                if _top3 and st.button("📓 Add Top 3 to Prediction Tracker", key="hub_add_pt",
-                                        type="primary", use_container_width=True):
-                    _top3_syms = [r["symbol"] for r in _top3]
-                    _pt_wl     = st.session_state.get("pt_watchlist", _ptd.get("watchlist", []))
-                    _added     = []
-                    for _ts in _top3_syms:
-                        if _ts not in _pt_wl:
-                            _pt_wl.append(_ts)
-                            _added.append(_ts)
-                    if _added:
-                        st.session_state["pt_watchlist"] = _pt_wl
-                        _ptd["watchlist"] = _pt_wl
-                        _pt_save(_ptd)
-                        st.success(f"Added to Prediction Tracker: {', '.join(_added)}")
+                    # Fundamental verdict from score + DCF
+                    _dcf = compute_dcf(_f)
+                    if _dcf and _dcf.get("verdict"):
+                        _fund_v = _dcf["verdict"]  # STRONG BUY / BUY / HOLD / SELL / STRONG SELL
                     else:
-                        st.info("All top 3 are already in Prediction Tracker.")
-            with _act_cols[1]:
-                _sync_log_btn = st.button(
-                    "📋 Sync BUY Picks → Decision Log",
-                    key="hub_sync_decision_log",
-                    type="primary",
-                    use_container_width=True,
-                    help="Auto-fills today's BUY-rated stocks into the Decision Log with all model signals.",
-                )
+                        # Fall back to score_stock score
+                        if _sc >= 70:   _fund_v = "STRONG BUY"
+                        elif _sc >= 58: _fund_v = "BUY"
+                        elif _sc >= 44: _fund_v = "HOLD"
+                        elif _sc >= 30: _fund_v = "SELL"
+                        else:           _fund_v = "STRONG SELL"
 
-            if _sync_log_btn:
-                _today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-                _dlog      = st.session_state.get("decision_log", _dlog_load())
-                _existing_keys = {(r["date"], r["symbol"]) for r in _dlog}
-                _synced    = []
+                    # Monte Carlo verdict
+                    _mc = None
+                    _mc_v = "—"
+                    try:
+                        _mc = monte_carlo_targets(_f, n_simulations=2000)
+                        if _mc:
+                            _mc3m_prob = _mc.get("3M", {}).get("prob_up", 50)
+                            _mc3m_ret  = _mc.get("3M", {}).get("ret_base", 0)
+                            _mc_bullish = _mc3m_prob >= 60 and _mc3m_ret > 0
+                            _mc_bearish = _mc3m_prob < 45 or _mc3m_ret < -5
+                            if _mc_bullish and _sc >= 65:   _mc_v = "STRONG BUY"
+                            elif _mc_bullish:               _mc_v = "BUY"
+                            elif _mc_bearish:               _mc_v = "SELL"
+                            else:                           _mc_v = "HOLD"
+                    except Exception:
+                        pass
 
-                # Determine BUY stocks: score >= 55 OR hf_verdict contains BUY OR mtf_label contains BUY
-                _buy_stocks = [
-                    r for r in _res_ok
-                    if r["score"] >= 55
-                    or "BUY" in (r.get("hf_verdict") or "").upper()
-                    or "BUY" in (r.get("mtf_label") or "").upper()
-                ]
+                    return _sc, _bkdn, _f, _fund_v, _mc_v, _mc
+                except Exception:
+                    return 50, {}, {}, "—", "—", None
 
-                for _br in _buy_stocks:
-                    _key = (_today_str, _br["symbol"])
-                    if _key in _existing_keys:
-                        continue  # already logged today
+            # ── main analysis loop ────────────────────────────────────────
+            _hub_feat_map = {}  # sym → features (for normalise later)
+            _hub_raw      = []  # partial results before final scoring
 
-                    # Live trade signal verdict
-                    _ltv = _br.get("mtf_label", "—")
-                    if _br.get("mtf_buy_votes", 0) >= 2:
-                        _ltv = f"BUY ({_br['mtf_buy_votes']}/3 TF)"
-                    elif _br.get("mtf_sell_votes", 0) >= 2:
-                        _ltv = f"SELL ({_br['mtf_sell_votes']}/3 TF)"
+            for _hi, _hsym in enumerate(_selected_syms):
+                _hentry = _selected_map.get(_hsym, {"symbol": _hsym})
+                _havg   = _hentry.get("avg_price", 0) or 0
+                _pct_done = (_hi + 1) / _total
+                _hub_progress.progress(_pct_done, text=f"[{_hi+1}/{_total}] {_hsym} — fetching data…")
 
-                    # Predicted price from Prediction Tracker
-                    _pred_px  = _br.get("pred_tomorrow")
-                    _close_px = _br.get("price", 0)
-                    _pred_gain_pct = (
-                        round((_pred_px - _close_px) / _close_px * 100, 2)
-                        if _pred_px and _close_px > 0 else None
+                try:
+                    # Layer 1: intraday candles for live signals + HF rules
+                    _hdf5m = _fetch_live_candles(_hsym, "5m", "5d")
+                    if _hdf5m is None or len(_hdf5m) < 20:
+                        _hdf5m = _fetch_live_candles(_hsym, "1d", "3mo")
+                    if _hdf5m is None or len(_hdf5m) < 10:
+                        _hub_results.append({"symbol": _hsym, "error": "No price data", "score": -999,
+                                             "avg_price": _havg, "source": _hentry.get("source","—")})
+                        continue
+
+                    _hub_status.caption(f"⚙️ {_hsym} — computing live signals…")
+                    _hsig      = _compute_live_signals(_hdf5m)
+                    _hhfr      = _hedge_fund_rules(_hdf5m)
+                    _hres, _hsup = _compute_sr_levels(_hdf5m)
+                    _htgt      = _compute_targets(_hdf5m, _hres, _hsup)
+
+                    _hclose  = float(_hdf5m["Close"].dropna().iloc[-1])
+                    _hrsi    = _hsig.get("rsi") or 50
+                    _hmh     = _hsig.get("macd_hist") or 0
+                    _hbbp    = _hsig.get("bb_pct") or 50
+                    _hvol    = _hsig.get("vol_z") or 0
+                    _hhf_sc  = _hhfr.get("score", 0)
+                    _hsig_type = _hsig.get("signal", "HOLD")
+
+                    # Layer 1 score: HF quant rules → normalise to 0-100
+                    # _hhf_sc range is roughly -12 to +12; map to 0-100
+                    _hf_score_100 = float(np.clip((_hhf_sc + 12) / 24 * 100, 0, 100))
+
+                    # Layer 2: multi-timeframe confluence
+                    _hub_status.caption(f"⚙️ {_hsym} — multi-timeframe confluence…")
+                    _mtf_sc, _mtf_bv, _mtf_sv, _mtf_lbl = _hub_mtf_score(_hsym)
+
+                    # Layer 3: fundamentals + full score_stock + DCF + MC (0-100)
+                    _hub_status.caption(f"⚙️ {_hsym} — fundamental + Monte Carlo analysis…")
+                    _fund_sc, _fund_bkdn, _hfeats, _fund_verdict, _mc_verdict, _hmc = _hub_fundamental_score(_hsym)
+
+                    # Layer 4: Prediction tracker signal
+                    _hpt_data     = _ptd_hub.get("records", {}).get(_hsym, [])
+                    _hpt_pred_tmr = None
+                    _hpt_accuracy = None
+                    _pt_score_100 = 50  # neutral default
+                    if _hpt_data:
+                        for _hpr in sorted(_hpt_data, key=lambda x: x.get("date",""), reverse=True):
+                            if _hpr.get("pred_tomorrow"):
+                                _hpt_pred_tmr = _hpr["pred_tomorrow"]
+                                break
+                        _hpt_correct = [r for r in _hpt_data if r.get("actual") and r.get("pred_today")]
+                        if _hpt_correct:
+                            _hpt_right = sum(1 for r in _hpt_correct
+                                             if (r["pred_today"] > r.get("actual_prev", r["actual"])) ==
+                                                (r["actual"] > r.get("actual_prev", r["actual"])))
+                            _hpt_accuracy = _hpt_right / len(_hpt_correct) * 100
+                        if _hpt_pred_tmr and _hclose > 0:
+                            _pt_upside = (_hpt_pred_tmr - _hclose) / _hclose
+                            # Upside >3% bullish, <-3% bearish, accuracy-weighted
+                            _acc_w = (_hpt_accuracy / 100) if _hpt_accuracy else 0.5
+                            _pt_score_100 = float(np.clip(50 + _pt_upside * 300 * _acc_w, 0, 100))
+
+                    # ── Weighted composite score (0-100) ──────────────────
+                    _composite = (
+                        _hf_score_100 * _wp["w_hf"]   +
+                        _mtf_sc       * _wp["w_mtf"]  +
+                        _fund_sc      * _wp["w_fund"]  +
+                        _pt_score_100 * _wp["w_pt"]
                     )
 
-                    # Fundamental verdict — from DCF/score_stock consensus
-                    _fund_verdict_raw = _br.get("fund_verdict", "—")
-                    _fund_sc          = _br.get("fund_score", 0)
-                    _fund_v = f"{_fund_verdict_raw} ({_fund_sc:.0f}/100)"
+                    # Hard penalty: EXIT_NOW signal drops score significantly
+                    if _hsig_type == "EXIT_NOW":
+                        _composite = max(0, _composite - 25)
+                    elif _hsig_type == "WATCH":
+                        _composite = max(0, _composite - 8)
+                    elif _hsig_type == "HOLD_BUY_DIP":
+                        _composite = min(100, _composite + 5)
 
-                    # Technical verdict (quant rules)
-                    _tech_sc = _br.get("hf_score_100", 0)
-                    _tech_v  = _br.get("hf_verdict", "—") + f" ({_tech_sc:.0f}/100)"
+                    _hpnl = ((_hclose - _havg) / _havg * 100) if _havg > 0 else None
 
-                    # Monte Carlo verdict — consensus BUY/HOLD/SELL + price targets
-                    _mc_verdict_raw = _br.get("mc_verdict", "—")
-                    _fib  = _br.get("fib_target", 0)
-                    _stop = _br.get("session_stop", 0)
-                    if _fib and _close_px > 0:
-                        _mc_upside = (_fib - _close_px) / _close_px * 100
-                        _mc_v = f"{_mc_verdict_raw} | Target ₹{_fib:.2f} (+{_mc_upside:.1f}%) | Stop ₹{_stop:.2f}"
-                    else:
-                        _mc_v = _mc_verdict_raw
-
-                    _dlog.append({
-                        "date":            _today_str,
-                        "symbol":          _br["symbol"],
-                        "sector":          _br.get("sector", "—"),
-                        "close_price":     round(_close_px, 2),
-                        "predicted_price": round(_pred_px, 2) if _pred_px else None,
-                        "pct_gain_suggested": _pred_gain_pct,
-                        "live_trade_signal":  _ltv,
-                        "fundamentals":    _fund_v,
-                        "technical":       _tech_v,
-                        "monte_carlo":     _mc_v,
-                        "composite_score": round(_br["score"], 1),
-                        "mode":            _disp_wp["label"],
-                        "did_we_buy":      "",       # user fills
-                        "actual_price":    None,     # filled by Update button
-                        "actual_gain_pct": None,     # filled by Update button
+                    _hub_results.append({
+                        "symbol":        _hsym,
+                        "price":         _hclose,
+                        "avg_price":     _havg,
+                        "pnl_pct":       _hpnl,
+                        "score":         round(_composite, 1),
+                        # Layer breakdown
+                        "hf_score_100":  round(_hf_score_100, 1),
+                        "mtf_score":     round(_mtf_sc, 1),
+                        "fund_score":    round(_fund_sc, 1),
+                        "pt_score":      round(_pt_score_100, 1),
+                        # Sub-scores from score_stock
+                        "tech_score":    _fund_bkdn.get("technical", 0),
+                        "fund_sub":      _fund_bkdn.get("fundamental", 0),
+                        "risk_score":    _fund_bkdn.get("risk", 0),
+                        "sent_score":    _fund_bkdn.get("sentiment", 0),
+                        "fund_verdict":  _fund_verdict,
+                        "mc_verdict":    _mc_verdict,
+                        # Raw indicators
+                        "rsi":           _hrsi,
+                        "macd_hist":     _hmh,
+                        "bb_pct":        _hbbp,
+                        "vol_z":         _hvol,
+                        "hf_score":      _hhf_sc,
+                        "signal":        _hsig_type,
+                        "hf_verdict":    _hhfr.get("verdict", "—"),
+                        "mtf_label":     _mtf_lbl,
+                        "mtf_buy_votes": _mtf_bv,
+                        "mtf_sell_votes":_mtf_sv,
+                        # Fundamental data
+                        "pe":            _hfeats.get("pe"),
+                        "roe":           _hfeats.get("roe"),
+                        "net_margin":    _hfeats.get("net_margin"),
+                        "rev_growth":    _hfeats.get("rev_growth"),
+                        "beta":          _hfeats.get("beta"),
+                        "analyst_upside":_hfeats.get("analyst_upside"),
+                        "sector":        _hfeats.get("sector", "—"),
+                        # Targets
+                        "pred_tomorrow": _hpt_pred_tmr,
+                        "pt_accuracy":   _hpt_accuracy,
+                        "fib_target":    _htgt.get("fib_100", 0),
+                        "session_stop":  _htgt.get("session_stop", 0),
+                        "source":        _hentry.get("source", "—"),
+                        "error":         None,
                     })
-                    _synced.append(_br["symbol"])
 
-                _dlog_save(_dlog)
-                st.session_state["decision_log"] = _dlog
-                if _synced:
-                    st.success(f"✅ Synced {len(_synced)} BUY stocks to Decision Log: {', '.join(_synced)}")
-                else:
-                    st.info("No new BUY stocks to sync (already logged today or none qualify).")
-                st.rerun()
+                except Exception as _herr:
+                    _hub_results.append({"symbol": _hsym, "error": str(_herr), "score": -999,
+                                         "avg_price": _havg, "source": _hentry.get("source","—")})
 
-        # ═══════════════════════════════════════════════════════════════════════
-        # DECISION LOG
-        # ═══════════════════════════════════════════════════════════════════════
+            _hub_progress.empty()
+            _hub_status.empty()
+            _hub_results.sort(key=lambda x: x["score"], reverse=True)
+            st.session_state["hub_results"]       = _hub_results
+            st.session_state["hub_analysis_done"] = True
+            st.rerun()
+
+    # ── Display results ──────────────────────────────────────────────────
+    if st.session_state.get("hub_analysis_done") and st.session_state.get("hub_results"):
+        _res_all = st.session_state["hub_results"]
+        _res_ok  = [r for r in _res_all if not r.get("error")]
+        _res_err = [r for r in _res_all if r.get("error")]
+
+        # Top 3
+        _disp_mode = st.session_state.get("hub_run_mode", "both")
+        _disp_wp   = _HUB_WEIGHT_PRESETS[_disp_mode]
         st.markdown("---")
-        st.markdown("## 📋 Decision Log")
+        st.markdown(f"### 🏆 Top 3 Picks — {_disp_wp['label']} Mode")
         st.caption(
-            "Auto-filled when you click **Sync BUY Picks → Decision Log** after running analysis. "
-            "Edit 'Did we buy?' inline. Click **Update Yesterday's Results** to back-fill actual prices."
+            f"Score 0-100 · Mode: **{_disp_wp['label']}** · "
+            f"MTF {int(_disp_wp['w_mtf']*100)}% · "
+            f"Quant {int(_disp_wp['w_hf']*100)}% · "
+            f"Fundamentals {int(_disp_wp['w_fund']*100)}% · "
+            f"Pred Tracker {int(_disp_wp['w_pt']*100)}%"
+        )
+        _top3  = _res_ok[:3]
+        _medal = ["🥇", "🥈", "🥉"]
+        for _ti, _tr in enumerate(_top3):
+            _tc = "#00c853" if _tr["score"] >= 65 else "#ff9800" if _tr["score"] >= 45 else "#aaa"
+            _sig_emoji = {"EXIT_NOW":"🔴","WATCH":"🟡","HOLD":"🟢","HOLD_BUY_DIP":"🔵"}.get(_tr.get("signal",""),"⚪")
+            _pred_line = ""
+            if _tr.get("pred_tomorrow") and _tr.get("price"):
+                _pd_chg = (_tr["pred_tomorrow"] - _tr["price"]) / _tr["price"] * 100
+                _pd_col = "#00c853" if _pd_chg >= 0 else "#ff5252"
+                _pd_acc = f" · accuracy {_tr['pt_accuracy']:.0f}%" if _tr.get("pt_accuracy") else ""
+                _pred_line = (f"<div style='font-size:0.8rem;color:{_pd_col};margin-top:4px'>"
+                              f"📓 PT signal: {_pd_chg:+.2f}% tomorrow "
+                              f"(target ₹{_tr['pred_tomorrow']:.2f}){_pd_acc}</div>")
+            _pnl_line = ""
+            if _tr.get("pnl_pct") is not None:
+                _pc = "#00c853" if _tr["pnl_pct"] >= 0 else "#ff5252"
+                _pnl_line = (f"<div style='font-size:0.8rem;color:{_pc};margin-top:2px'>"
+                             f"Your P&L: {_tr['pnl_pct']:+.2f}% · avg ₹{_tr['avg_price']:.2f}</div>")
+
+            # 4 score bars
+            def _bar(label, val, color="#4fc3f7"):
+                _w = max(0, min(100, val or 0))
+                return (f"<div style='margin-bottom:3px'>"
+                        f"<span style='font-size:0.7rem;color:#888;width:110px;display:inline-block'>{label}</span>"
+                        f"<span style='display:inline-block;width:{_w*1.2:.0f}px;height:7px;background:{color};"
+                        f"border-radius:3px;vertical-align:middle'></span>"
+                        f"<span style='font-size:0.7rem;color:#aaa;margin-left:4px'>{_w:.0f}</span></div>")
+
+            _bars = (
+                _bar("Quant Rules",    _tr.get("hf_score_100",50), "#7c4dff") +
+                _bar("Multi-TF",       _tr.get("mtf_score",50),    "#00bcd4") +
+                _bar("Fundamentals",   _tr.get("fund_score",50),   "#ff9800") +
+                _bar("Pred Tracker",   _tr.get("pt_score",50),     "#4caf50")
+            )
+
+            # Verdict badges
+            def _verdict_badge(label, verdict):
+                _vc = {"STRONG BUY":"#00c853","BUY":"#69f0ae","HOLD":"#ff9800",
+                       "SELL":"#ff5252","STRONG SELL":"#d50000"}.get(verdict, "#888")
+                return (f"<span style='background:{_vc}22;border:1px solid {_vc};"
+                        f"border-radius:4px;padding:2px 7px;font-size:0.72rem;"
+                        f"color:{_vc};font-weight:700'>{label}: {verdict}</span>")
+
+            _fv = _tr.get("fund_verdict", "—")
+            _mv = _tr.get("mc_verdict", "—")
+            _hfv = _tr.get("hf_verdict", "—")
+            _verdict_row = (
+                _verdict_badge("Fundamentals", _fv) + " &nbsp;" +
+                _verdict_badge("Monte Carlo",  _mv) + " &nbsp;" +
+                _verdict_badge("Quant Rules",  _hfv)
+            )
+
+            # Fundamental data chips
+            _pe_str  = f"P/E {_tr['pe']:.1f}" if _tr.get("pe") else ""
+            _roe_str = f"ROE {_tr['roe']*100:.0f}%" if _tr.get("roe") else ""
+            _mg_str  = f"Margin {_tr['net_margin']*100:.0f}%" if _tr.get("net_margin") else ""
+            _rg_str  = f"Rev↑ {_tr['rev_growth']*100:.0f}%" if _tr.get("rev_growth") else ""
+            _up_str  = f"Analyst ↑{_tr['analyst_upside']*100:.0f}%" if _tr.get("analyst_upside") else ""
+            _fund_chips = " · ".join(x for x in [_pe_str,_roe_str,_mg_str,_rg_str,_up_str] if x)
+
+            st.markdown(
+                f"<div style='background:{_tc}18;border:2px solid {_tc};"
+                f"border-radius:10px;padding:14px;margin-bottom:12px'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
+                f"<div>"
+                f"<span style='font-size:1.5rem'>{_medal[_ti]}</span> "
+                f"<span style='font-size:1.4rem;font-weight:900;color:{_tc}'>{_tr['symbol']}</span> "
+                f"<span style='color:#888;font-size:0.8rem'> {_tr.get('sector','')}</span><br>"
+                f"<span style='color:#888;font-size:0.82rem'>{_sig_emoji} Live: {_tr.get('signal','')} · MTF: {_tr.get('mtf_label','—')}</span>"
+                f"</div>"
+                f"<div style='text-align:right'>"
+                f"<div style='font-size:1.5rem;font-weight:900;color:{_tc}'>{_tr['score']:.0f}<span style='font-size:0.9rem;color:#888'>/100</span></div>"
+                f"<div style='font-size:0.78rem;color:#888'>₹{_tr['price']:.2f} · Stop ₹{_tr.get('session_stop',0):.2f} · Target ₹{_tr.get('fib_target',0):.2f}</div>"
+                f"</div></div>"
+                f"<div style='margin-top:8px'>{_verdict_row}</div>"
+                f"<div style='margin-top:10px'>{_bars}</div>"
+                f"<div style='margin-top:6px;font-size:0.75rem;color:#777'>{_fund_chips}</div>"
+                f"<div style='margin-top:4px;display:flex;flex-wrap:wrap;gap:6px;font-size:0.75rem;color:#aaa'>"
+                f"<span>RSI {_tr.get('rsi',0):.0f}</span>"
+                f"<span>MACD {_tr.get('macd_hist',0):.4f}</span>"
+                f"<span>BB {_tr.get('bb_pct',0):.0f}%</span>"
+                f"<span>Vol {_tr.get('vol_z',0):.1f}σ</span>"
+                f"<span>Beta {(_tr.get('beta') or 1):.2f}</span>"
+                f"<span>MTF {_tr.get('mtf_buy_votes',0)}B/{_tr.get('mtf_sell_votes',0)}S</span>"
+                f"</div>"
+                f"{_pred_line}{_pnl_line}"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+        # Full table
+        st.markdown("---")
+        st.markdown(f"### 📋 All Stocks — Ranked by Composite Score ({_disp_wp['label']} Mode)")
+        import pandas as _hub_pd
+        _tbl = []
+        for _r in _res_ok:
+            _tbl.append({
+                "Symbol":        _r["symbol"],
+                "Score /100":    round(_r["score"], 1),
+                "Quant":         round(_r.get("hf_score_100", 0), 1),
+                "Multi-TF":      round(_r.get("mtf_score", 0), 1),
+                "Fundamentals":  round(_r.get("fund_score", 0), 1),
+                "Pred Tracker":  round(_r.get("pt_score", 0), 1),
+                "Price":         f"₹{_r['price']:.2f}",
+                "Fund. Verdict":  _r.get("fund_verdict","—"),
+                "MC Verdict":    _r.get("mc_verdict","—"),
+                "MTF Signal":    _r.get("mtf_label","—"),
+                "HF Verdict":    _r.get("hf_verdict","—"),
+                "RSI":           f"{_r.get('rsi',0):.0f}",
+                "P/E":           f"{_r['pe']:.1f}" if _r.get("pe") else "—",
+                "ROE":           f"{_r['roe']*100:.0f}%" if _r.get("roe") else "—",
+                "Analyst ↑":     f"{_r['analyst_upside']*100:.0f}%" if _r.get("analyst_upside") else "—",
+                "PT Tomorrow":   f"₹{_r['pred_tomorrow']:.2f}" if _r.get("pred_tomorrow") else "—",
+                "PT Accuracy":   f"{_r['pt_accuracy']:.0f}%" if _r.get("pt_accuracy") else "—",
+                "P&L":           f"{_r['pnl_pct']:+.1f}%" if _r.get("pnl_pct") is not None else "—",
+                "Sector":        _r.get("sector","—"),
+                "Source":        _r.get("source","—"),
+            })
+        if _tbl:
+            st.dataframe(_hub_pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
+
+        if _res_err:
+            with st.expander(f"⚠️ {len(_res_err)} stocks with no data"):
+                for _e in _res_err:
+                    st.caption(f"{_e['symbol']}: {_e['error']}")
+
+        # Add top 3 to prediction tracker
+        st.markdown("---")
+        _act_cols = st.columns(2)
+        with _act_cols[0]:
+            if _top3 and st.button("📓 Add Top 3 to Prediction Tracker", key="hub_add_pt",
+                                    type="primary", use_container_width=True):
+                _top3_syms = [r["symbol"] for r in _top3]
+                _pt_wl     = st.session_state.get("pt_watchlist", _ptd.get("watchlist", []))
+                _added     = []
+                for _ts in _top3_syms:
+                    if _ts not in _pt_wl:
+                        _pt_wl.append(_ts)
+                        _added.append(_ts)
+                if _added:
+                    st.session_state["pt_watchlist"] = _pt_wl
+                    _ptd["watchlist"] = _pt_wl
+                    _pt_save(_ptd)
+                    st.success(f"Added to Prediction Tracker: {', '.join(_added)}")
+                else:
+                    st.info("All top 3 are already in Prediction Tracker.")
+        with _act_cols[1]:
+            _sync_log_btn = st.button(
+                "📋 Sync BUY Picks → Decision Log",
+                key="hub_sync_decision_log",
+                type="primary",
+                use_container_width=True,
+                help="Auto-fills today's BUY-rated stocks into the Decision Log with all model signals.",
+            )
+
+        if _sync_log_btn:
+            _today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+            _dlog      = st.session_state.get("decision_log", _dlog_load())
+            _existing_keys = {(r["date"], r["symbol"]) for r in _dlog}
+            _synced    = []
+
+            # Determine BUY stocks: score >= 55 OR hf_verdict contains BUY OR mtf_label contains BUY
+            _buy_stocks = [
+                r for r in _res_ok
+                if r["score"] >= 55
+                or "BUY" in (r.get("hf_verdict") or "").upper()
+                or "BUY" in (r.get("mtf_label") or "").upper()
+            ]
+
+            for _br in _buy_stocks:
+                _key = (_today_str, _br["symbol"])
+                if _key in _existing_keys:
+                    continue  # already logged today
+
+                # Live trade signal verdict
+                _ltv = _br.get("mtf_label", "—")
+                if _br.get("mtf_buy_votes", 0) >= 2:
+                    _ltv = f"BUY ({_br['mtf_buy_votes']}/3 TF)"
+                elif _br.get("mtf_sell_votes", 0) >= 2:
+                    _ltv = f"SELL ({_br['mtf_sell_votes']}/3 TF)"
+
+                # Predicted price from Prediction Tracker
+                _pred_px  = _br.get("pred_tomorrow")
+                _close_px = _br.get("price", 0)
+                _pred_gain_pct = (
+                    round((_pred_px - _close_px) / _close_px * 100, 2)
+                    if _pred_px and _close_px > 0 else None
+                )
+
+                # Fundamental verdict — from DCF/score_stock consensus
+                _fund_verdict_raw = _br.get("fund_verdict", "—")
+                _fund_sc          = _br.get("fund_score", 0)
+                _fund_v = f"{_fund_verdict_raw} ({_fund_sc:.0f}/100)"
+
+                # Technical verdict (quant rules)
+                _tech_sc = _br.get("hf_score_100", 0)
+                _tech_v  = _br.get("hf_verdict", "—") + f" ({_tech_sc:.0f}/100)"
+
+                # Monte Carlo verdict — consensus BUY/HOLD/SELL + price targets
+                _mc_verdict_raw = _br.get("mc_verdict", "—")
+                _fib  = _br.get("fib_target", 0)
+                _stop = _br.get("session_stop", 0)
+                if _fib and _close_px > 0:
+                    _mc_upside = (_fib - _close_px) / _close_px * 100
+                    _mc_v = f"{_mc_verdict_raw} | Target ₹{_fib:.2f} (+{_mc_upside:.1f}%) | Stop ₹{_stop:.2f}"
+                else:
+                    _mc_v = _mc_verdict_raw
+
+                _dlog.append({
+                    "date":            _today_str,
+                    "symbol":          _br["symbol"],
+                    "sector":          _br.get("sector", "—"),
+                    "close_price":     round(_close_px, 2),
+                    "predicted_price": round(_pred_px, 2) if _pred_px else None,
+                    "pct_gain_suggested": _pred_gain_pct,
+                    "live_trade_signal":  _ltv,
+                    "fundamentals":    _fund_v,
+                    "technical":       _tech_v,
+                    "monte_carlo":     _mc_v,
+                    "composite_score": round(_br["score"], 1),
+                    "mode":            _disp_wp["label"],
+                    "did_we_buy":      "",       # user fills
+                    "actual_price":    None,     # filled by Update button
+                    "actual_gain_pct": None,     # filled by Update button
+                })
+                _synced.append(_br["symbol"])
+
+            _dlog_save(_dlog)
+            st.session_state["decision_log"] = _dlog
+            if _synced:
+                st.success(f"✅ Synced {len(_synced)} BUY stocks to Decision Log: {', '.join(_synced)}")
+            else:
+                st.info("No new BUY stocks to sync (already logged today or none qualify).")
+            st.rerun()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # DECISION LOG
+    # ═══════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("## 📋 Decision Log")
+    st.caption(
+        "Auto-filled when you click **Sync BUY Picks → Decision Log** after running analysis. "
+        "Edit 'Did we buy?' inline. Click **Update Yesterday's Results** to back-fill actual prices."
+    )
+
+    # session_state is the live store; disk is written on every change
+    if "decision_log" not in st.session_state:
+        st.session_state["decision_log"] = _dlog_load()
+    _dlog = st.session_state["decision_log"]
+
+    # Show disk save errors if any
+    if st.session_state.get("_dlog_save_err"):
+        st.warning(f"⚠️ Could not save to disk: {st.session_state['_dlog_save_err']} — data is in memory for this session only.")
+    if st.session_state.get("_hub_save_err"):
+        st.warning(f"⚠️ Hub save error: {st.session_state['_hub_save_err']}")
+
+    if not _dlog:
+        st.info("No entries yet. Run analysis and click **Sync BUY Picks → Decision Log**.")
+    else:
+        # ── Backup / Restore ──────────────────────────────────────────────
+        with st.expander(f"💾 Backup & Restore — {len(_dlog)} entries saved", expanded=False):
+            _dl_bk1, _dl_bk2 = st.columns(2)
+            with _dl_bk1:
+                st.caption("Download decision log — re-upload after server restart.")
+                _dlog_dl_bytes = json.dumps(_dlog, indent=2, default=str).encode()
+                st.download_button(
+                    "⬇️ Download Decision Log",
+                    data=_dlog_dl_bytes,
+                    file_name=f"decision_log_{datetime.datetime.now().strftime('%Y%m%d')}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+            with _dl_bk2:
+                st.caption("Restore from a previously downloaded backup.")
+                _dlog_restore_file = st.file_uploader(
+                    "Upload backup JSON", type=["json"], key="dlog_restore_upload"
+                )
+                if _dlog_restore_file and not st.session_state.get("_dlog_restored_done"):
+                    try:
+                        _dlog_restored = json.loads(_dlog_restore_file.read())
+                        if not isinstance(_dlog_restored, list):
+                            st.error("Invalid format — expected a list of log entries.")
+                        else:
+                            _dlog_save(_dlog_restored)
+                            st.session_state["decision_log"] = _dlog_restored
+                            _dlog = _dlog_restored
+                            st.session_state["_dlog_restored_done"] = True
+                            st.success(f"✅ Restored {len(_dlog_restored)} entries. Scroll down to see the log.")
+                    except Exception as _dre:
+                        st.error(f"Could not restore: {_dre}")
+                if not _dlog_restore_file:
+                    st.session_state.pop("_dlog_restored_done", None)
+
+        # ── Update Yesterday's Results button ─────────────────────────────
+        _upd_col1, _upd_col2 = st.columns([2, 2])
+        with _upd_col1:
+            _update_btn = st.button(
+                "🔄 Update Yesterday's Results",
+                key="dlog_update_results",
+                use_container_width=True,
+            )
+        with _upd_col2:
+            _clear_log_btn = st.button(
+                "🗑 Clear Entire Log",
+                key="dlog_clear",
+                use_container_width=True,
+            )
+
+        if _clear_log_btn:
+            _dlog_save([])
+            st.session_state["decision_log"] = []
+            st.rerun()
+
+        if _update_btn:
+            _yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            _updated   = 0
+            for _row in _dlog:
+                # Update rows that were logged yesterday (or any past date) with no actual price yet
+                if _row.get("actual_price") is None and _row.get("date", "") < datetime.datetime.now().strftime("%Y-%m-%d"):
+                    try:
+                        _sym = _row["symbol"]
+                        _cur = float(yf.Ticker(_sym).fast_info.last_price or 0)
+                        if _cur > 0:
+                            _row["actual_price"] = round(_cur, 2)
+                            _entry = _row.get("close_price") or 0
+                            if _entry > 0:
+                                _row["actual_gain_pct"] = round((_cur - _entry) / _entry * 100, 2)
+                            _updated += 1
+                    except Exception:
+                        pass
+            _dlog_save(_dlog)
+            st.session_state["decision_log"] = _dlog
+            st.success(f"✅ Updated actual prices for {_updated} past entries.")
+            st.rerun()
+
+        # ── Editable table ────────────────────────────────────────────────
+        import pandas as _dl_pd
+        _dl_df = _dl_pd.DataFrame([
+            {
+                "Date":              r["date"],
+                "Stock":             r["symbol"],
+                "Sector":            r.get("sector", "—"),
+                "Close Price":       r.get("close_price"),
+                "Predicted Price":   r.get("predicted_price"),
+                "% Gain Suggested":  r.get("pct_gain_suggested"),
+                "Live Trade Signal": r.get("live_trade_signal", "—"),
+                "Fundamentals":      r.get("fundamentals", "—"),
+                "Technical":         r.get("technical", "—"),
+                "Monte Carlo":       r.get("monte_carlo", "—"),
+                "Score":             r.get("composite_score"),
+                "Mode":              r.get("mode", "—"),
+                "Did we buy?":       r.get("did_we_buy", ""),
+                "Actual Price":      r.get("actual_price"),
+                "Actual Gain %":     r.get("actual_gain_pct"),
+            }
+            for r in sorted(_dlog, key=lambda x: x.get("date",""), reverse=True)
+        ])
+
+        _edited_dlog = st.data_editor(
+            _dl_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "Date":              st.column_config.TextColumn("Date", width=90),
+                "Stock":             st.column_config.TextColumn("Stock", width=80),
+                "Sector":            st.column_config.TextColumn("Sector", width=100),
+                "Close Price":       st.column_config.NumberColumn("Close ₹", format="₹%.2f", width=85),
+                "Predicted Price":   st.column_config.NumberColumn("Pred ₹", format="₹%.2f", width=85),
+                "% Gain Suggested":  st.column_config.NumberColumn("% Gain Sug.", format="%.2f%%", width=90),
+                "Live Trade Signal": st.column_config.TextColumn("Live Signal", width=120),
+                "Fundamentals":      st.column_config.TextColumn("Fundamentals", width=140),
+                "Technical":         st.column_config.TextColumn("Technical", width=140),
+                "Monte Carlo":       st.column_config.TextColumn("Monte Carlo", width=160),
+                "Score":             st.column_config.NumberColumn("Score", format="%.1f", width=60),
+                "Mode":              st.column_config.TextColumn("Mode", width=80),
+                "Did we buy?":       st.column_config.SelectboxColumn(
+                                         "Did we buy?", width=100,
+                                         options=["", "Yes", "No", "Partial"],
+                                     ),
+                "Actual Price":      st.column_config.NumberColumn("Actual ₹", format="₹%.2f", width=85),
+                "Actual Gain %":     st.column_config.NumberColumn("Actual Gain%", format="%.2f%%", width=100),
+            },
+            disabled=["Date","Stock","Sector","Close Price","Predicted Price",
+                      "% Gain Suggested","Live Trade Signal","Fundamentals",
+                      "Technical","Monte Carlo","Score","Mode",
+                      "Actual Price","Actual Gain %"],
+            key="dlog_editor",
         )
 
-        # session_state is the live store; disk is written on every change
-        if "decision_log" not in st.session_state:
-            st.session_state["decision_log"] = _dlog_load()
-        _dlog = st.session_state["decision_log"]
-
-        # Show disk save errors if any
-        if st.session_state.get("_dlog_save_err"):
-            st.warning(f"⚠️ Could not save to disk: {st.session_state['_dlog_save_err']} — data is in memory for this session only.")
-        if st.session_state.get("_hub_save_err"):
-            st.warning(f"⚠️ Hub save error: {st.session_state['_hub_save_err']}")
-
-        if not _dlog:
-            st.info("No entries yet. Run analysis and click **Sync BUY Picks → Decision Log**.")
-        else:
-            # ── Backup / Restore ──────────────────────────────────────────────
-            with st.expander(f"💾 Backup & Restore — {len(_dlog)} entries saved", expanded=False):
-                _dl_bk1, _dl_bk2 = st.columns(2)
-                with _dl_bk1:
-                    st.caption("Download decision log — re-upload after server restart.")
-                    _dlog_dl_bytes = json.dumps(_dlog, indent=2, default=str).encode()
-                    st.download_button(
-                        "⬇️ Download Decision Log",
-                        data=_dlog_dl_bytes,
-                        file_name=f"decision_log_{datetime.datetime.now().strftime('%Y%m%d')}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                    )
-                with _dl_bk2:
-                    st.caption("Restore from a previously downloaded backup.")
-                    _dlog_restore_file = st.file_uploader(
-                        "Upload backup JSON", type=["json"], key="dlog_restore_upload"
-                    )
-                    if _dlog_restore_file and not st.session_state.get("_dlog_restored_done"):
-                        try:
-                            _dlog_restored = json.loads(_dlog_restore_file.read())
-                            if not isinstance(_dlog_restored, list):
-                                st.error("Invalid format — expected a list of log entries.")
-                            else:
-                                _dlog_save(_dlog_restored)
-                                st.session_state["decision_log"] = _dlog_restored
-                                _dlog = _dlog_restored
-                                st.session_state["_dlog_restored_done"] = True
-                                st.success(f"✅ Restored {len(_dlog_restored)} entries. Scroll down to see the log.")
-                        except Exception as _dre:
-                            st.error(f"Could not restore: {_dre}")
-                    if not _dlog_restore_file:
-                        st.session_state.pop("_dlog_restored_done", None)
-
-            # ── Update Yesterday's Results button ─────────────────────────────
-            _upd_col1, _upd_col2 = st.columns([2, 2])
-            with _upd_col1:
-                _update_btn = st.button(
-                    "🔄 Update Yesterday's Results",
-                    key="dlog_update_results",
-                    use_container_width=True,
-                )
-            with _upd_col2:
-                _clear_log_btn = st.button(
-                    "🗑 Clear Entire Log",
-                    key="dlog_clear",
-                    use_container_width=True,
-                )
-
-            if _clear_log_btn:
-                _dlog_save([])
-                st.session_state["decision_log"] = []
-                st.rerun()
-
-            if _update_btn:
-                _yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-                _updated   = 0
-                for _row in _dlog:
-                    # Update rows that were logged yesterday (or any past date) with no actual price yet
-                    if _row.get("actual_price") is None and _row.get("date", "") < datetime.datetime.now().strftime("%Y-%m-%d"):
-                        try:
-                            _sym = _row["symbol"]
-                            _cur = float(yf.Ticker(_sym).fast_info.last_price or 0)
-                            if _cur > 0:
-                                _row["actual_price"] = round(_cur, 2)
-                                _entry = _row.get("close_price") or 0
-                                if _entry > 0:
-                                    _row["actual_gain_pct"] = round((_cur - _entry) / _entry * 100, 2)
-                                _updated += 1
-                        except Exception:
-                            pass
-                _dlog_save(_dlog)
-                st.session_state["decision_log"] = _dlog
-                st.success(f"✅ Updated actual prices for {_updated} past entries.")
-                st.rerun()
-
-            # ── Editable table ────────────────────────────────────────────────
-            import pandas as _dl_pd
-            _dl_df = _dl_pd.DataFrame([
-                {
-                    "Date":              r["date"],
-                    "Stock":             r["symbol"],
-                    "Sector":            r.get("sector", "—"),
-                    "Close Price":       r.get("close_price"),
-                    "Predicted Price":   r.get("predicted_price"),
-                    "% Gain Suggested":  r.get("pct_gain_suggested"),
-                    "Live Trade Signal": r.get("live_trade_signal", "—"),
-                    "Fundamentals":      r.get("fundamentals", "—"),
-                    "Technical":         r.get("technical", "—"),
-                    "Monte Carlo":       r.get("monte_carlo", "—"),
-                    "Score":             r.get("composite_score"),
-                    "Mode":              r.get("mode", "—"),
-                    "Did we buy?":       r.get("did_we_buy", ""),
-                    "Actual Price":      r.get("actual_price"),
-                    "Actual Gain %":     r.get("actual_gain_pct"),
-                }
-                for r in sorted(_dlog, key=lambda x: x.get("date",""), reverse=True)
-            ])
-
-            _edited_dlog = st.data_editor(
-                _dl_df,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                column_config={
-                    "Date":              st.column_config.TextColumn("Date", width=90),
-                    "Stock":             st.column_config.TextColumn("Stock", width=80),
-                    "Sector":            st.column_config.TextColumn("Sector", width=100),
-                    "Close Price":       st.column_config.NumberColumn("Close ₹", format="₹%.2f", width=85),
-                    "Predicted Price":   st.column_config.NumberColumn("Pred ₹", format="₹%.2f", width=85),
-                    "% Gain Suggested":  st.column_config.NumberColumn("% Gain Sug.", format="%.2f%%", width=90),
-                    "Live Trade Signal": st.column_config.TextColumn("Live Signal", width=120),
-                    "Fundamentals":      st.column_config.TextColumn("Fundamentals", width=140),
-                    "Technical":         st.column_config.TextColumn("Technical", width=140),
-                    "Monte Carlo":       st.column_config.TextColumn("Monte Carlo", width=160),
-                    "Score":             st.column_config.NumberColumn("Score", format="%.1f", width=60),
-                    "Mode":              st.column_config.TextColumn("Mode", width=80),
-                    "Did we buy?":       st.column_config.SelectboxColumn(
-                                             "Did we buy?", width=100,
-                                             options=["", "Yes", "No", "Partial"],
-                                         ),
-                    "Actual Price":      st.column_config.NumberColumn("Actual ₹", format="₹%.2f", width=85),
-                    "Actual Gain %":     st.column_config.NumberColumn("Actual Gain%", format="%.2f%%", width=100),
-                },
-                disabled=["Date","Stock","Sector","Close Price","Predicted Price",
-                          "% Gain Suggested","Live Trade Signal","Fundamentals",
-                          "Technical","Monte Carlo","Score","Mode",
-                          "Actual Price","Actual Gain %"],
-                key="dlog_editor",
-            )
-
-            # Save "Did we buy?" edits back to log
-            if st.button("💾 Save 'Did we buy?' edits", key="dlog_save_edits", type="primary"):
-                _sorted_log = sorted(_dlog, key=lambda x: x.get("date",""), reverse=True)
-                for _i, _row in enumerate(_sorted_log):
-                    if _i < len(_edited_dlog):
-                        _row["did_we_buy"] = _edited_dlog.iloc[_i]["Did we buy?"] or ""
-                _dlog_save(_sorted_log)
-                st.session_state["decision_log"] = _sorted_log
-                st.success("Saved.")
-                st.rerun()
+        # Save "Did we buy?" edits back to log
+        if st.button("💾 Save 'Did we buy?' edits", key="dlog_save_edits", type="primary"):
+            _sorted_log = sorted(_dlog, key=lambda x: x.get("date",""), reverse=True)
+            for _i, _row in enumerate(_sorted_log):
+                if _i < len(_edited_dlog):
+                    _row["did_we_buy"] = _edited_dlog.iloc[_i]["Did we buy?"] or ""
+            _dlog_save(_sorted_log)
+            st.session_state["decision_log"] = _sorted_log
+            st.success("Saved.")
+            st.rerun()
