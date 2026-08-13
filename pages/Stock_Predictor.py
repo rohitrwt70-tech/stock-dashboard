@@ -14950,18 +14950,49 @@ with main_tab7:
 
                 # ── helper: fundamentals + score_stock layer (0-100) ──────────
                 def _hub_fundamental_score(sym):
-                    """Fetch 1y daily + yf.info → run full score_stock engine. Returns (score 0-100, breakdown, features)."""
+                    """Fetch 1y daily + yf.info → run full score_stock + DCF + MC engine.
+                    Returns (score 0-100, breakdown, features, fund_verdict, mc_verdict, mc_result)."""
                     try:
                         _f = fetch_stock_features(sym)
                         if _f is None:
-                            return 50, {}, {}
+                            return 50, {}, {}, "—", "—", None
                         _f = enrich_with_fundamentals(_f)
                         _ranked = normalise_universe({sym: _f})
                         _bkt    = classify_bucket(_f, _ranked)
                         _sc, _bkdn = score_stock(_f, _ranked, _bkt)
-                        return _sc, _bkdn, _f
+
+                        # Fundamental verdict from score + DCF
+                        _dcf = compute_dcf(_f)
+                        if _dcf and _dcf.get("verdict"):
+                            _fund_v = _dcf["verdict"]  # STRONG BUY / BUY / HOLD / SELL / STRONG SELL
+                        else:
+                            # Fall back to score_stock score
+                            if _sc >= 70:   _fund_v = "STRONG BUY"
+                            elif _sc >= 58: _fund_v = "BUY"
+                            elif _sc >= 44: _fund_v = "HOLD"
+                            elif _sc >= 30: _fund_v = "SELL"
+                            else:           _fund_v = "STRONG SELL"
+
+                        # Monte Carlo verdict
+                        _mc = None
+                        _mc_v = "—"
+                        try:
+                            _mc = monte_carlo_targets(_f, n_simulations=2000)
+                            if _mc:
+                                _mc3m_prob = _mc.get("3M", {}).get("prob_up", 50)
+                                _mc3m_ret  = _mc.get("3M", {}).get("ret_base", 0)
+                                _mc_bullish = _mc3m_prob >= 60 and _mc3m_ret > 0
+                                _mc_bearish = _mc3m_prob < 45 or _mc3m_ret < -5
+                                if _mc_bullish and _sc >= 65:   _mc_v = "STRONG BUY"
+                                elif _mc_bullish:               _mc_v = "BUY"
+                                elif _mc_bearish:               _mc_v = "SELL"
+                                else:                           _mc_v = "HOLD"
+                        except Exception:
+                            pass
+
+                        return _sc, _bkdn, _f, _fund_v, _mc_v, _mc
                     except Exception:
-                        return 50, {}, {}
+                        return 50, {}, {}, "—", "—", None
 
                 # ── main analysis loop ────────────────────────────────────────
                 _hub_feat_map = {}  # sym → features (for normalise later)
@@ -15005,9 +15036,9 @@ with main_tab7:
                         _hub_status.caption(f"⚙️ {_hsym} — multi-timeframe confluence…")
                         _mtf_sc, _mtf_bv, _mtf_sv, _mtf_lbl = _hub_mtf_score(_hsym)
 
-                        # Layer 3: fundamentals + full score_stock (0-100)
-                        _hub_status.caption(f"⚙️ {_hsym} — fundamental analysis…")
-                        _fund_sc, _fund_bkdn, _hfeats = _hub_fundamental_score(_hsym)
+                        # Layer 3: fundamentals + full score_stock + DCF + MC (0-100)
+                        _hub_status.caption(f"⚙️ {_hsym} — fundamental + Monte Carlo analysis…")
+                        _fund_sc, _fund_bkdn, _hfeats, _fund_verdict, _mc_verdict, _hmc = _hub_fundamental_score(_hsym)
 
                         # Layer 4: Prediction tracker signal
                         _hpt_data     = _ptd_hub.get("records", {}).get(_hsym, [])
@@ -15065,6 +15096,8 @@ with main_tab7:
                             "fund_sub":      _fund_bkdn.get("fundamental", 0),
                             "risk_score":    _fund_bkdn.get("risk", 0),
                             "sent_score":    _fund_bkdn.get("sentiment", 0),
+                            "fund_verdict":  _fund_verdict,
+                            "mc_verdict":    _mc_verdict,
                             # Raw indicators
                             "rsi":           _hrsi,
                             "macd_hist":     _hmh,
@@ -15157,7 +15190,24 @@ with main_tab7:
                     _bar("Pred Tracker",   _tr.get("pt_score",50),     "#4caf50")
                 )
 
-                # Fundamental snapshot
+                # Verdict badges
+                def _verdict_badge(label, verdict):
+                    _vc = {"STRONG BUY":"#00c853","BUY":"#69f0ae","HOLD":"#ff9800",
+                           "SELL":"#ff5252","STRONG SELL":"#d50000"}.get(verdict, "#888")
+                    return (f"<span style='background:{_vc}22;border:1px solid {_vc};"
+                            f"border-radius:4px;padding:2px 7px;font-size:0.72rem;"
+                            f"color:{_vc};font-weight:700'>{label}: {verdict}</span>")
+
+                _fv = _tr.get("fund_verdict", "—")
+                _mv = _tr.get("mc_verdict", "—")
+                _hfv = _tr.get("hf_verdict", "—")
+                _verdict_row = (
+                    _verdict_badge("Fundamentals", _fv) + " &nbsp;" +
+                    _verdict_badge("Monte Carlo",  _mv) + " &nbsp;" +
+                    _verdict_badge("Quant Rules",  _hfv)
+                )
+
+                # Fundamental data chips
                 _pe_str  = f"P/E {_tr['pe']:.1f}" if _tr.get("pe") else ""
                 _roe_str = f"ROE {_tr['roe']*100:.0f}%" if _tr.get("roe") else ""
                 _mg_str  = f"Margin {_tr['net_margin']*100:.0f}%" if _tr.get("net_margin") else ""
@@ -15173,13 +15223,13 @@ with main_tab7:
                     f"<span style='font-size:1.5rem'>{_medal[_ti]}</span> "
                     f"<span style='font-size:1.4rem;font-weight:900;color:{_tc}'>{_tr['symbol']}</span> "
                     f"<span style='color:#888;font-size:0.8rem'> {_tr.get('sector','')}</span><br>"
-                    f"<span style='color:#888;font-size:0.82rem'>{_sig_emoji} {_tr.get('signal','')} · "
-                    f"{_tr.get('hf_verdict','—')} · MTF: {_tr.get('mtf_label','—')}</span>"
+                    f"<span style='color:#888;font-size:0.82rem'>{_sig_emoji} Live: {_tr.get('signal','')} · MTF: {_tr.get('mtf_label','—')}</span>"
                     f"</div>"
                     f"<div style='text-align:right'>"
                     f"<div style='font-size:1.5rem;font-weight:900;color:{_tc}'>{_tr['score']:.0f}<span style='font-size:0.9rem;color:#888'>/100</span></div>"
                     f"<div style='font-size:0.78rem;color:#888'>₹{_tr['price']:.2f} · Stop ₹{_tr.get('session_stop',0):.2f} · Target ₹{_tr.get('fib_target',0):.2f}</div>"
                     f"</div></div>"
+                    f"<div style='margin-top:8px'>{_verdict_row}</div>"
                     f"<div style='margin-top:10px'>{_bars}</div>"
                     f"<div style='margin-top:6px;font-size:0.75rem;color:#777'>{_fund_chips}</div>"
                     f"<div style='margin-top:4px;display:flex;flex-wrap:wrap;gap:6px;font-size:0.75rem;color:#aaa'>"
@@ -15209,6 +15259,8 @@ with main_tab7:
                     "Fundamentals":  round(_r.get("fund_score", 0), 1),
                     "Pred Tracker":  round(_r.get("pt_score", 0), 1),
                     "Price":         f"₹{_r['price']:.2f}",
+                    "Fund. Verdict":  _r.get("fund_verdict","—"),
+                    "MC Verdict":    _r.get("mc_verdict","—"),
                     "MTF Signal":    _r.get("mtf_label","—"),
                     "HF Verdict":    _r.get("hf_verdict","—"),
                     "RSI":           f"{_r.get('rsi',0):.0f}",
@@ -15292,24 +15344,24 @@ with main_tab7:
                         if _pred_px and _close_px > 0 else None
                     )
 
-                    # Fundamental verdict
-                    _fund_sc  = _br.get("fund_score", 0)
-                    if _fund_sc >= 65:   _fund_v = f"STRONG ({_fund_sc:.0f}/100)"
-                    elif _fund_sc >= 50: _fund_v = f"ADEQUATE ({_fund_sc:.0f}/100)"
-                    else:                _fund_v = f"WEAK ({_fund_sc:.0f}/100)"
+                    # Fundamental verdict — from DCF/score_stock consensus
+                    _fund_verdict_raw = _br.get("fund_verdict", "—")
+                    _fund_sc          = _br.get("fund_score", 0)
+                    _fund_v = f"{_fund_verdict_raw} ({_fund_sc:.0f}/100)"
 
                     # Technical verdict (quant rules)
-                    _tech_sc  = _br.get("hf_score_100", 0)
-                    _tech_v   = _br.get("hf_verdict", "—") + f" ({_tech_sc:.0f}/100)"
+                    _tech_sc = _br.get("hf_score_100", 0)
+                    _tech_v  = _br.get("hf_verdict", "—") + f" ({_tech_sc:.0f}/100)"
 
-                    # Monte Carlo: use fib_target as proxy for MC upside
+                    # Monte Carlo verdict — consensus BUY/HOLD/SELL + price targets
+                    _mc_verdict_raw = _br.get("mc_verdict", "—")
                     _fib  = _br.get("fib_target", 0)
                     _stop = _br.get("session_stop", 0)
                     if _fib and _close_px > 0:
                         _mc_upside = (_fib - _close_px) / _close_px * 100
-                        _mc_v = f"Target ₹{_fib:.2f} (+{_mc_upside:.1f}%) | Stop ₹{_stop:.2f}"
+                        _mc_v = f"{_mc_verdict_raw} | Target ₹{_fib:.2f} (+{_mc_upside:.1f}%) | Stop ₹{_stop:.2f}"
                     else:
-                        _mc_v = "—"
+                        _mc_v = _mc_verdict_raw
 
                     _dlog.append({
                         "date":            _today_str,
