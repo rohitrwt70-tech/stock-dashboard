@@ -14338,9 +14338,11 @@ with main_tab7:
 
     def _dlog_save(rows):
         try:
+            DECISION_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
             DECISION_LOG_FILE.write_text(json.dumps(rows, indent=2, default=str))
-        except Exception:
-            pass
+            st.session_state["_dlog_save_err"] = None
+        except Exception as _e:
+            st.session_state["_dlog_save_err"] = str(_e)
 
     def _hub_load():
         if HUB_FILE.exists():
@@ -14352,9 +14354,11 @@ with main_tab7:
 
     def _hub_save(data):
         try:
+            HUB_FILE.parent.mkdir(parents=True, exist_ok=True)
             HUB_FILE.write_text(json.dumps(data, indent=2, default=str))
-        except Exception:
-            pass
+            st.session_state["_hub_save_err"] = None
+        except Exception as _e:
+            st.session_state["_hub_save_err"] = str(_e)
 
     def _hub_parse_pdf(file_bytes):
         """Extract stock tickers/names from a PDF using regex heuristics."""
@@ -14447,88 +14451,11 @@ with main_tab7:
             return [], [], str(_e)
 
     # ── Load hub state ───────────────────────────────────────────────────────
-    # Primary: disk (works locally). On Railway (ephemeral disk), falls back to
-    # browser localStorage via a JS bridge injected below.
-    _hub = _hub_load()
-
-    # JS bridge: on every render, write current hub to localStorage.
-    # On page load with empty disk, read localStorage and inject via query param.
-    _hub_json_for_js = json.dumps(_hub, default=str).replace("'", "\\'")
-    import streamlit.components.v1 as _stc
-    _stc.html(f"""
-    <script>
-    (function() {{
-        // Always persist latest hub to localStorage
-        var data = '{_hub_json_for_js}';
-        try {{
-            var parsed = JSON.parse(data);
-            var isEmpty = (
-                (!parsed.portfolio || parsed.portfolio.length === 0) &&
-                (!parsed.pdf       || parsed.pdf.length === 0) &&
-                (!parsed.watchlist || parsed.watchlist.length === 0) &&
-                (!parsed.screener  || parsed.screener.length === 0)
-            );
-            if (!isEmpty) {{
-                localStorage.setItem('stockdash_hub', data);
-            }} else {{
-                // Disk is empty — try to restore from localStorage
-                var saved = localStorage.getItem('stockdash_hub');
-                if (saved) {{
-                    var sp = new URLSearchParams(window.top.location.search);
-                    if (!sp.get('hub_ls_restore')) {{
-                        // Pass data via sessionStorage and trigger reload with flag
-                        sessionStorage.setItem('stockdash_hub_restore', saved);
-                        var url = new URL(window.top.location.href);
-                        url.searchParams.set('hub_ls_restore', '1');
-                        window.top.location.replace(url.toString());
-                    }}
-                }}
-            }}
-        }} catch(e) {{}}
-    }})();
-    </script>
-    """, height=0)
-
-    # Handle localStorage restore via sessionStorage (passed as query param flag)
-    # We can't directly read sessionStorage from Python, so we use a text_input hidden bridge
-    _ls_flag = st.query_params.get("hub_ls_restore", "")
-    if _ls_flag == "1":
-        # Show a one-time restore button — user clicks it once after redirect
-        _stc.html("""
-        <script>
-        (function() {
-            var saved = sessionStorage.getItem('stockdash_hub_restore');
-            if (saved) {
-                // Write to a hidden input that Streamlit can read via query param
-                // Encode as base64 to avoid URL length issues
-                var b64 = btoa(unescape(encodeURIComponent(saved)));
-                var url = new URL(window.top.location.href);
-                url.searchParams.delete('hub_ls_restore');
-                url.searchParams.set('hub_ls_data', b64);
-                sessionStorage.removeItem('stockdash_hub_restore');
-                window.top.location.replace(url.toString());
-            }
-        })();
-        </script>
-        """, height=0)
-
-    _ls_data_b64 = st.query_params.get("hub_ls_data", "")
-    if _ls_data_b64:
-        try:
-            import base64 as _b64
-            _ls_restored = json.loads(_b64.b64decode(_ls_data_b64 + "==").decode("utf-8"))
-            _hub_save(_ls_restored)
-            _hub = _ls_restored
-            # Clear the query param
-            _qp_clean = dict(st.query_params)
-            _qp_clean.pop("hub_ls_data", None)
-            st.query_params.clear()
-            for _k, _v in _qp_clean.items():
-                st.query_params[_k] = _v
-        except Exception:
-            pass
-
-    st.session_state["hub_data"] = _hub
+    # session_state is the live in-memory store.
+    # Disk file is written on every change and read on first load of the session.
+    if "hub_data" not in st.session_state:
+        st.session_state["hub_data"] = _hub_load()
+    _hub = st.session_state["hub_data"]
 
     st.markdown("## 🗂️ My Stocks Hub")
     st.caption(
@@ -15312,7 +15239,7 @@ with main_tab7:
 
             if _sync_log_btn:
                 _today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-                _dlog      = _dlog_load()
+                _dlog      = st.session_state.get("decision_log", _dlog_load())
                 _existing_keys = {(r["date"], r["symbol"]) for r in _dlog}
                 _synced    = []
 
@@ -15400,26 +15327,16 @@ with main_tab7:
             "Edit 'Did we buy?' inline. Click **Update Yesterday's Results** to back-fill actual prices."
         )
 
-        # Load log (localStorage bridge same as hub)
+        # session_state is the live store; disk is written on every change
         if "decision_log" not in st.session_state:
             st.session_state["decision_log"] = _dlog_load()
         _dlog = st.session_state["decision_log"]
 
-        # Persist to localStorage
-        _dlog_js = json.dumps(_dlog, default=str).replace("'", "\\'")
-        _stc.html(f"""
-        <script>
-        (function() {{
-            var data = '{_dlog_js}';
-            try {{
-                var parsed = JSON.parse(data);
-                if (parsed && parsed.length > 0) {{
-                    localStorage.setItem('stockdash_dlog', data);
-                }}
-            }} catch(e) {{}}
-        }})();
-        </script>
-        """, height=0)
+        # Show disk save errors if any
+        if st.session_state.get("_dlog_save_err"):
+            st.warning(f"⚠️ Could not save to disk: {st.session_state['_dlog_save_err']} — data is in memory for this session only.")
+        if st.session_state.get("_hub_save_err"):
+            st.warning(f"⚠️ Hub save error: {st.session_state['_hub_save_err']}")
 
         if not _dlog:
             st.info("No entries yet. Run analysis and click **Sync BUY Picks → Decision Log**.")
