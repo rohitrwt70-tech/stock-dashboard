@@ -14739,55 +14739,115 @@ with main_tab7:
                 st.session_state["hub_results"] = []
 
                 _hub_progress = st.progress(0, text="Starting…")
+                _hub_status   = st.empty()
                 _hub_results  = []
-                _total = len(_selected_syms)
-                _ptd_hub = _pt_load()
+                _total        = len(_selected_syms)
+                _ptd_hub      = _pt_load()
+
+                # ── helper: MTF signal score (0-100) ─────────────────────────
+                def _hub_mtf_score(sym):
+                    """Fetch 1m/5m/15m, return (mtf_score 0-100, buy_votes, sell_votes, confluence_label)."""
+                    _votes = []
+                    for _iv, _per in [("1m","1d"), ("5m","5d"), ("15m","5d")]:
+                        try:
+                            _d = _fetch_live_candles(sym, _iv, _per)
+                            if _d is None or len(_d) < 10:
+                                continue
+                            _s = _compute_live_signals(_d)
+                            _rsi = _s.get("rsi") or 50
+                            _mh  = _s.get("macd_hist") or 0
+                            _bbp = _s.get("bb_pct") or 50
+                            _buy  = (1 if _rsi < 55 else 0) + (1 if _mh > 0 else 0) + (1 if _bbp < 70 else 0)
+                            _sell = (1 if _rsi > 65 else 0) + (1 if _mh < 0 else 0) + (1 if _bbp > 75 else 0)
+                            if _s.get("signal") == "EXIT_NOW":
+                                _votes.append("SELL")
+                            elif _sell >= 2:
+                                _votes.append("SELL")
+                            elif _buy >= 2:
+                                _votes.append("BUY")
+                            else:
+                                _votes.append("NEUTRAL")
+                        except Exception:
+                            pass
+                    if not _votes:
+                        return 50, 0, 0, "NO DATA"
+                    _bv = _votes.count("BUY")
+                    _sv = _votes.count("SELL")
+                    # Score: 3 BUY=100, 2 BUY=75, 1 BUY=55, all NEUTRAL=50, 1 SELL=35, 2 SELL=20, 3 SELL=0
+                    _mtf_sc = max(0, min(100, 50 + (_bv - _sv) * 25))
+                    if _bv >= 2:   _lbl = "STRONG BUY"
+                    elif _bv == 1 and _sv == 0: _lbl = "MILD BUY"
+                    elif _sv >= 2: _lbl = "STRONG SELL"
+                    elif _sv == 1 and _bv == 0: _lbl = "MILD SELL"
+                    else:          _lbl = "MIXED / WAIT"
+                    return _mtf_sc, _bv, _sv, _lbl
+
+                # ── helper: fundamentals + score_stock layer (0-100) ──────────
+                def _hub_fundamental_score(sym):
+                    """Fetch 1y daily + yf.info → run full score_stock engine. Returns (score 0-100, breakdown, features)."""
+                    try:
+                        _f = fetch_stock_features(sym)
+                        if _f is None:
+                            return 50, {}, {}
+                        _f = enrich_with_fundamentals(_f)
+                        _ranked = normalise_universe({sym: _f})
+                        _bkt    = classify_bucket(_f, _ranked)
+                        _sc, _bkdn = score_stock(_f, _ranked, _bkt)
+                        return _sc, _bkdn, _f
+                    except Exception:
+                        return 50, {}, {}
+
+                # ── main analysis loop ────────────────────────────────────────
+                _hub_feat_map = {}  # sym → features (for normalise later)
+                _hub_raw      = []  # partial results before final scoring
 
                 for _hi, _hsym in enumerate(_selected_syms):
                     _hentry = _selected_map.get(_hsym, {"symbol": _hsym})
                     _havg   = _hentry.get("avg_price", 0) or 0
-                    _hub_progress.progress((_hi + 1) / _total, text=f"Analysing {_hsym} ({_hi+1}/{_total})…")
+                    _pct_done = (_hi + 1) / _total
+                    _hub_progress.progress(_pct_done, text=f"[{_hi+1}/{_total}] {_hsym} — fetching data…")
 
                     try:
-                        _hdf = _fetch_live_candles(_hsym, "5m", "5d")
-                        if _hdf is None or _hdf.empty or len(_hdf) < 20:
-                            _hdf = _fetch_live_candles(_hsym, "1d", "3mo")
-                        if _hdf is None or _hdf.empty or len(_hdf) < 10:
-                            _hub_results.append({"symbol": _hsym, "error": "No data", "score": -999, "avg_price": _havg, "source": _hentry.get("source","—")})
+                        # Layer 1: intraday candles for live signals + HF rules
+                        _hdf5m = _fetch_live_candles(_hsym, "5m", "5d")
+                        if _hdf5m is None or len(_hdf5m) < 20:
+                            _hdf5m = _fetch_live_candles(_hsym, "1d", "3mo")
+                        if _hdf5m is None or len(_hdf5m) < 10:
+                            _hub_results.append({"symbol": _hsym, "error": "No price data", "score": -999,
+                                                 "avg_price": _havg, "source": _hentry.get("source","—")})
                             continue
 
-                        _hsig  = _compute_live_signals(_hdf)
-                        _hhfr  = _hedge_fund_rules(_hdf)
-                        _hres, _hsup = _compute_sr_levels(_hdf)
-                        _htgt  = _compute_targets(_hdf, _hres, _hsup)
+                        _hub_status.caption(f"⚙️ {_hsym} — computing live signals…")
+                        _hsig      = _compute_live_signals(_hdf5m)
+                        _hhfr      = _hedge_fund_rules(_hdf5m)
+                        _hres, _hsup = _compute_sr_levels(_hdf5m)
+                        _htgt      = _compute_targets(_hdf5m, _hres, _hsup)
 
-                        _hclose = float(_hdf["Close"].dropna().iloc[-1])
-                        _hrsi   = _hsig.get("rsi") or 50
-                        _hmh    = _hsig.get("macd_hist") or 0
-                        _hbbp   = _hsig.get("bb_pct") or 50
-                        _hvol   = _hsig.get("vol_z") or 0
-                        _hhf_sc = _hhfr.get("score", 0)
-
-                        # Composite opportunity score
-                        _opp = 0
-                        if 35 <= _hrsi <= 55:   _opp += 25
-                        elif 55 < _hrsi <= 65:  _opp += 15
-                        elif _hrsi < 35:        _opp += 10
-                        if _hmh > 0:            _opp += 20
-                        elif _hmh > -0.001:     _opp += 5
-                        if _hbbp < 60:          _opp += 15
-                        elif _hbbp < 75:        _opp += 8
-                        if _hvol > 1.5:         _opp += 10
-                        _opp += min(max(_hhf_sc * 3, -20), 20)
+                        _hclose  = float(_hdf5m["Close"].dropna().iloc[-1])
+                        _hrsi    = _hsig.get("rsi") or 50
+                        _hmh     = _hsig.get("macd_hist") or 0
+                        _hbbp    = _hsig.get("bb_pct") or 50
+                        _hvol    = _hsig.get("vol_z") or 0
+                        _hhf_sc  = _hhfr.get("score", 0)
                         _hsig_type = _hsig.get("signal", "HOLD")
-                        if _hsig_type == "EXIT_NOW":        _opp -= 30
-                        elif _hsig_type == "WATCH":         _opp -= 10
-                        elif _hsig_type == "HOLD_BUY_DIP":  _opp += 10
 
-                        # Prediction tracker
+                        # Layer 1 score: HF quant rules → normalise to 0-100
+                        # _hhf_sc range is roughly -12 to +12; map to 0-100
+                        _hf_score_100 = float(np.clip((_hhf_sc + 12) / 24 * 100, 0, 100))
+
+                        # Layer 2: multi-timeframe confluence
+                        _hub_status.caption(f"⚙️ {_hsym} — multi-timeframe confluence…")
+                        _mtf_sc, _mtf_bv, _mtf_sv, _mtf_lbl = _hub_mtf_score(_hsym)
+
+                        # Layer 3: fundamentals + full score_stock (0-100)
+                        _hub_status.caption(f"⚙️ {_hsym} — fundamental analysis…")
+                        _fund_sc, _fund_bkdn, _hfeats = _hub_fundamental_score(_hsym)
+
+                        # Layer 4: Prediction tracker signal
                         _hpt_data     = _ptd_hub.get("records", {}).get(_hsym, [])
                         _hpt_pred_tmr = None
                         _hpt_accuracy = None
+                        _pt_score_100 = 50  # neutral default
                         if _hpt_data:
                             for _hpr in sorted(_hpt_data, key=lambda x: x.get("date",""), reverse=True):
                                 if _hpr.get("pred_tomorrow"):
@@ -14799,8 +14859,28 @@ with main_tab7:
                                                  if (r["pred_today"] > r.get("actual_prev", r["actual"])) ==
                                                     (r["actual"] > r.get("actual_prev", r["actual"])))
                                 _hpt_accuracy = _hpt_right / len(_hpt_correct) * 100
-                        if _hpt_pred_tmr and _hpt_pred_tmr > _hclose:
-                            _opp += min((_hpt_pred_tmr - _hclose) / _hclose * 200, 15)
+                            if _hpt_pred_tmr and _hclose > 0:
+                                _pt_upside = (_hpt_pred_tmr - _hclose) / _hclose
+                                # Upside >3% bullish, <-3% bearish, accuracy-weighted
+                                _acc_w = (_hpt_accuracy / 100) if _hpt_accuracy else 0.5
+                                _pt_score_100 = float(np.clip(50 + _pt_upside * 300 * _acc_w, 0, 100))
+
+                        # ── Weighted composite score (0-100) ──────────────────
+                        # Weights: HF quant 25%, MTF confluence 25%, Fundamentals 30%, PT 20%
+                        _composite = (
+                            _hf_score_100 * 0.25 +
+                            _mtf_sc       * 0.25 +
+                            _fund_sc      * 0.30 +
+                            _pt_score_100 * 0.20
+                        )
+
+                        # Hard penalty: EXIT_NOW signal drops score significantly
+                        if _hsig_type == "EXIT_NOW":
+                            _composite = max(0, _composite - 25)
+                        elif _hsig_type == "WATCH":
+                            _composite = max(0, _composite - 8)
+                        elif _hsig_type == "HOLD_BUY_DIP":
+                            _composite = min(100, _composite + 5)
 
                         _hpnl = ((_hclose - _havg) / _havg * 100) if _havg > 0 else None
 
@@ -14809,7 +14889,18 @@ with main_tab7:
                             "price":         _hclose,
                             "avg_price":     _havg,
                             "pnl_pct":       _hpnl,
-                            "score":         round(_opp, 1),
+                            "score":         round(_composite, 1),
+                            # Layer breakdown
+                            "hf_score_100":  round(_hf_score_100, 1),
+                            "mtf_score":     round(_mtf_sc, 1),
+                            "fund_score":    round(_fund_sc, 1),
+                            "pt_score":      round(_pt_score_100, 1),
+                            # Sub-scores from score_stock
+                            "tech_score":    _fund_bkdn.get("technical", 0),
+                            "fund_sub":      _fund_bkdn.get("fundamental", 0),
+                            "risk_score":    _fund_bkdn.get("risk", 0),
+                            "sent_score":    _fund_bkdn.get("sentiment", 0),
+                            # Raw indicators
                             "rsi":           _hrsi,
                             "macd_hist":     _hmh,
                             "bb_pct":        _hbbp,
@@ -14817,6 +14908,18 @@ with main_tab7:
                             "hf_score":      _hhf_sc,
                             "signal":        _hsig_type,
                             "hf_verdict":    _hhfr.get("verdict", "—"),
+                            "mtf_label":     _mtf_lbl,
+                            "mtf_buy_votes": _mtf_bv,
+                            "mtf_sell_votes":_mtf_sv,
+                            # Fundamental data
+                            "pe":            _hfeats.get("pe"),
+                            "roe":           _hfeats.get("roe"),
+                            "net_margin":    _hfeats.get("net_margin"),
+                            "rev_growth":    _hfeats.get("rev_growth"),
+                            "beta":          _hfeats.get("beta"),
+                            "analyst_upside":_hfeats.get("analyst_upside"),
+                            "sector":        _hfeats.get("sector", "—"),
+                            # Targets
                             "pred_tomorrow": _hpt_pred_tmr,
                             "pt_accuracy":   _hpt_accuracy,
                             "fib_target":    _htgt.get("fib_100", 0),
@@ -14830,6 +14933,7 @@ with main_tab7:
                                              "avg_price": _havg, "source": _hentry.get("source","—")})
 
                 _hub_progress.empty()
+                _hub_status.empty()
                 _hub_results.sort(key=lambda x: x["score"], reverse=True)
                 st.session_state["hub_results"]       = _hub_results
                 st.session_state["hub_analysis_done"] = True
@@ -14844,42 +14948,74 @@ with main_tab7:
             # Top 3
             st.markdown("---")
             st.markdown("### 🏆 Top 3 Picks for Tomorrow")
+            st.caption("Score 0-100 · 4-layer engine: Quant rules 25% + Multi-timeframe 25% + Fundamentals 30% + Prediction Tracker 20%")
             _top3  = _res_ok[:3]
             _medal = ["🥇", "🥈", "🥉"]
             for _ti, _tr in enumerate(_top3):
-                _tc = "#00c853" if _tr["score"] >= 40 else "#ff9800" if _tr["score"] >= 20 else "#aaa"
-                _sig_emoji = {"EXIT_NOW":"🔴","WATCH":"🟡","HOLD":"🟢","HOLD_BUY_DIP":"🔵"}.get(_tr["signal"],"⚪")
+                _tc = "#00c853" if _tr["score"] >= 65 else "#ff9800" if _tr["score"] >= 45 else "#aaa"
+                _sig_emoji = {"EXIT_NOW":"🔴","WATCH":"🟡","HOLD":"🟢","HOLD_BUY_DIP":"🔵"}.get(_tr.get("signal",""),"⚪")
                 _pred_line = ""
                 if _tr.get("pred_tomorrow") and _tr.get("price"):
                     _pd_chg = (_tr["pred_tomorrow"] - _tr["price"]) / _tr["price"] * 100
                     _pd_col = "#00c853" if _pd_chg >= 0 else "#ff5252"
-                    _pd_acc = f" · PT accuracy {_tr['pt_accuracy']:.0f}%" if _tr.get("pt_accuracy") else ""
+                    _pd_acc = f" · accuracy {_tr['pt_accuracy']:.0f}%" if _tr.get("pt_accuracy") else ""
                     _pred_line = (f"<div style='font-size:0.8rem;color:{_pd_col};margin-top:4px'>"
-                                  f"📓 Prediction Tracker: {_pd_chg:+.2f}% tomorrow "
-                                  f"(target ${_tr['pred_tomorrow']:.2f}){_pd_acc}</div>")
+                                  f"📓 PT signal: {_pd_chg:+.2f}% tomorrow "
+                                  f"(target ₹{_tr['pred_tomorrow']:.2f}){_pd_acc}</div>")
                 _pnl_line = ""
                 if _tr.get("pnl_pct") is not None:
                     _pc = "#00c853" if _tr["pnl_pct"] >= 0 else "#ff5252"
                     _pnl_line = (f"<div style='font-size:0.8rem;color:{_pc};margin-top:2px'>"
-                                 f"P&L: {_tr['pnl_pct']:+.2f}% · avg ${_tr['avg_price']:.2f}</div>")
+                                 f"Your P&L: {_tr['pnl_pct']:+.2f}% · avg ₹{_tr['avg_price']:.2f}</div>")
+
+                # 4 score bars
+                def _bar(label, val, color="#4fc3f7"):
+                    _w = max(0, min(100, val or 0))
+                    return (f"<div style='margin-bottom:3px'>"
+                            f"<span style='font-size:0.7rem;color:#888;width:110px;display:inline-block'>{label}</span>"
+                            f"<span style='display:inline-block;width:{_w*1.2:.0f}px;height:7px;background:{color};"
+                            f"border-radius:3px;vertical-align:middle'></span>"
+                            f"<span style='font-size:0.7rem;color:#aaa;margin-left:4px'>{_w:.0f}</span></div>")
+
+                _bars = (
+                    _bar("Quant Rules",    _tr.get("hf_score_100",50), "#7c4dff") +
+                    _bar("Multi-TF",       _tr.get("mtf_score",50),    "#00bcd4") +
+                    _bar("Fundamentals",   _tr.get("fund_score",50),   "#ff9800") +
+                    _bar("Pred Tracker",   _tr.get("pt_score",50),     "#4caf50")
+                )
+
+                # Fundamental snapshot
+                _pe_str  = f"P/E {_tr['pe']:.1f}" if _tr.get("pe") else ""
+                _roe_str = f"ROE {_tr['roe']*100:.0f}%" if _tr.get("roe") else ""
+                _mg_str  = f"Margin {_tr['net_margin']*100:.0f}%" if _tr.get("net_margin") else ""
+                _rg_str  = f"Rev↑ {_tr['rev_growth']*100:.0f}%" if _tr.get("rev_growth") else ""
+                _up_str  = f"Analyst ↑{_tr['analyst_upside']*100:.0f}%" if _tr.get("analyst_upside") else ""
+                _fund_chips = " · ".join(x for x in [_pe_str,_roe_str,_mg_str,_rg_str,_up_str] if x)
+
                 st.markdown(
                     f"<div style='background:{_tc}18;border:2px solid {_tc};"
-                    f"border-radius:10px;padding:14px;margin-bottom:10px'>"
-                    f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                    f"<div><span style='font-size:1.5rem'>{_medal[_ti]}</span> "
+                    f"border-radius:10px;padding:14px;margin-bottom:12px'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:flex-start'>"
+                    f"<div>"
+                    f"<span style='font-size:1.5rem'>{_medal[_ti]}</span> "
                     f"<span style='font-size:1.4rem;font-weight:900;color:{_tc}'>{_tr['symbol']}</span> "
-                    f"<span style='color:#888;font-size:0.85rem'>{_sig_emoji} {_tr['signal']} · {_tr['hf_verdict']}</span></div>"
+                    f"<span style='color:#888;font-size:0.8rem'> {_tr.get('sector','')}</span><br>"
+                    f"<span style='color:#888;font-size:0.82rem'>{_sig_emoji} {_tr.get('signal','')} · "
+                    f"{_tr.get('hf_verdict','—')} · MTF: {_tr.get('mtf_label','—')}</span>"
+                    f"</div>"
                     f"<div style='text-align:right'>"
-                    f"<div style='font-size:1.2rem;font-weight:700;color:{_tc}'>Score {_tr['score']}</div>"
-                    f"<div style='font-size:0.8rem;color:#888'>Price ${_tr['price']:.2f} · Stop ${_tr['session_stop']:.2f} · Target ${_tr['fib_target']:.2f}</div>"
+                    f"<div style='font-size:1.5rem;font-weight:900;color:{_tc}'>{_tr['score']:.0f}<span style='font-size:0.9rem;color:#888'>/100</span></div>"
+                    f"<div style='font-size:0.78rem;color:#888'>₹{_tr['price']:.2f} · Stop ₹{_tr.get('session_stop',0):.2f} · Target ₹{_tr.get('fib_target',0):.2f}</div>"
                     f"</div></div>"
-                    f"<div style='margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;font-size:0.78rem;color:#aaa'>"
-                    f"<span>RSI {_tr['rsi']:.0f}</span>"
-                    f"<span>MACD {_tr['macd_hist']:.4f}</span>"
-                    f"<span>BB {_tr['bb_pct']:.0f}%</span>"
-                    f"<span>Vol {_tr['vol_z']:.1f}σ</span>"
-                    f"<span>Quant {_tr['hf_score']:+d}</span>"
-                    f"<span>Source: {_tr['source']}</span>"
+                    f"<div style='margin-top:10px'>{_bars}</div>"
+                    f"<div style='margin-top:6px;font-size:0.75rem;color:#777'>{_fund_chips}</div>"
+                    f"<div style='margin-top:4px;display:flex;flex-wrap:wrap;gap:6px;font-size:0.75rem;color:#aaa'>"
+                    f"<span>RSI {_tr.get('rsi',0):.0f}</span>"
+                    f"<span>MACD {_tr.get('macd_hist',0):.4f}</span>"
+                    f"<span>BB {_tr.get('bb_pct',0):.0f}%</span>"
+                    f"<span>Vol {_tr.get('vol_z',0):.1f}σ</span>"
+                    f"<span>Beta {(_tr.get('beta') or 1):.2f}</span>"
+                    f"<span>MTF {_tr.get('mtf_buy_votes',0)}B/{_tr.get('mtf_sell_votes',0)}S</span>"
                     f"</div>"
                     f"{_pred_line}{_pnl_line}"
                     f"</div>",
@@ -14888,24 +15024,29 @@ with main_tab7:
 
             # Full table
             st.markdown("---")
-            st.markdown("### 📋 All Stocks — Ranked by Score")
+            st.markdown("### 📋 All Stocks — Ranked by Composite Score")
             import pandas as _hub_pd
             _tbl = []
             for _r in _res_ok:
                 _tbl.append({
                     "Symbol":        _r["symbol"],
-                    "Score":         _r["score"],
-                    "Price":         f"${_r['price']:.2f}",
-                    "Signal":        _r["signal"],
-                    "HF Verdict":    _r["hf_verdict"],
-                    "RSI":           f"{_r['rsi']:.0f}",
-                    "MACD Hist":     f"{_r['macd_hist']:.4f}",
-                    "BB %":          f"{_r['bb_pct']:.0f}%",
-                    "Vol σ":         f"{_r['vol_z']:.1f}",
-                    "Pred Tomorrow": f"${_r['pred_tomorrow']:.2f}" if _r.get("pred_tomorrow") else "—",
+                    "Score /100":    round(_r["score"], 1),
+                    "Quant":         round(_r.get("hf_score_100", 0), 1),
+                    "Multi-TF":      round(_r.get("mtf_score", 0), 1),
+                    "Fundamentals":  round(_r.get("fund_score", 0), 1),
+                    "Pred Tracker":  round(_r.get("pt_score", 0), 1),
+                    "Price":         f"₹{_r['price']:.2f}",
+                    "MTF Signal":    _r.get("mtf_label","—"),
+                    "HF Verdict":    _r.get("hf_verdict","—"),
+                    "RSI":           f"{_r.get('rsi',0):.0f}",
+                    "P/E":           f"{_r['pe']:.1f}" if _r.get("pe") else "—",
+                    "ROE":           f"{_r['roe']*100:.0f}%" if _r.get("roe") else "—",
+                    "Analyst ↑":     f"{_r['analyst_upside']*100:.0f}%" if _r.get("analyst_upside") else "—",
+                    "PT Tomorrow":   f"₹{_r['pred_tomorrow']:.2f}" if _r.get("pred_tomorrow") else "—",
                     "PT Accuracy":   f"{_r['pt_accuracy']:.0f}%" if _r.get("pt_accuracy") else "—",
                     "P&L":           f"{_r['pnl_pct']:+.1f}%" if _r.get("pnl_pct") is not None else "—",
-                    "Source":        _r["source"],
+                    "Sector":        _r.get("sector","—"),
+                    "Source":        _r.get("source","—"),
                 })
             if _tbl:
                 st.dataframe(_hub_pd.DataFrame(_tbl), use_container_width=True, hide_index=True)
