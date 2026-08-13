@@ -12877,7 +12877,7 @@ with main_tab4:
                 # (Finnhub free /quote only returns regular session close, not pre/post price)
                 import pandas as _pdx
                 try:
-                    _now_et2 = _pdx.Timestamp.now(tz="US/Eastern")
+                    _now_et2 = _pdx.Timestamp.now(tz="America/New_York")
                     _mkt_open  = _now_et2.hour > 9 or (_now_et2.hour == 9 and _now_et2.minute >= 30)
                     _mkt_close = _now_et2.hour >= 16
                     _in_regular_session = _mkt_open and not _mkt_close
@@ -13005,7 +13005,7 @@ with main_tab4:
                 try:
                     import pandas as _pd_id
                     # Today's OHLC from the data
-                    _today_str = _pd_id.Timestamp.now(tz="US/Eastern").strftime("%Y-%m-%d")
+                    _today_str = _pd_id.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
                     _today_mask = _lm_df.index.normalize() == _pd_id.Timestamp(_today_str, tz=_lm_df.index.tz) if _lm_df.index.tz else _lm_df.index.date == _pd_id.Timestamp(_today_str).date()
                     _today_df   = _lm_df[_today_mask] if _today_mask.any() else _lm_df.tail(60)
                     _day_open   = float(_today_df["Open"].iloc[0])  if not _today_df.empty else _cur_px
