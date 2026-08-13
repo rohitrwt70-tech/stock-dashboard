@@ -14046,6 +14046,33 @@ with main_tab6:
 
     st.divider()
 
+    # ── Backup / Restore ─────────────────────────────────────────────────────
+    _pt_total_recs = sum(len(v) for v in _pt_records.values())
+    with st.expander(f"💾 Backup & Restore — {_pt_total_recs} records across {len(_pt_records)} stocks", expanded=False):
+        _pt_bk1, _pt_bk2 = st.columns(2)
+        with _pt_bk1:
+            st.caption("Download full prediction history — re-upload after server restart to keep training data.")
+            _pt_dl = json.dumps(_ptd, indent=2, default=str).encode()
+            st.download_button(
+                "⬇️ Download Prediction Data",
+                data=_pt_dl,
+                file_name=f"predictions_{datetime.date.today()}.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+        with _pt_bk2:
+            st.caption("Restore from a previously downloaded backup.")
+            _pt_restore_file = st.file_uploader("Upload predictions JSON", type=["json"], key="pt_restore_upload")
+            if _pt_restore_file:
+                try:
+                    _pt_restored = json.loads(_pt_restore_file.read())
+                    _pt_save(_pt_restored)
+                    st.session_state.pop("pt_watchlist", None)  # force reload
+                    st.success(f"✅ Restored — {sum(len(v) for v in _pt_restored.get('records',{}).values())} records.")
+                    st.rerun()
+                except Exception as _ptre:
+                    st.error(f"Could not restore: {_ptre}")
+
     # ── Update + Train buttons ────────────────────────────────────────────────
     _pt_ub_col, _pt_tb_col, _pt_clr_col = st.columns([2, 2, 1])
     with _pt_ub_col:

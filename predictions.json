@@ -6,7 +6,9 @@
     "SERV",
     "IREN",
     "MRVL",
-    "MU"
+    "MU",
+    "BE",
+    "DDOG"
   ],
   "records": {
     "AVGO": [
@@ -27,6 +29,48 @@
           "MACD bullish cross",
           "EMA20 > EMA50 \u2014 uptrend",
           "Near upper Bollinger Band \u2014 extended"
+        ],
+        "actual": 416.0799865722656,
+        "delta_pct": -3.25,
+        "delta_abs": -13.96,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-12",
+        "price_at_pred": 419.42498779296875,
+        "pred_today": 423.71,
+        "pred_tomorrow": 426.57,
+        "confidence": "Medium",
+        "score": 63.0,
+        "rsi": 63.9,
+        "mom_5d": -0.26,
+        "trend_up": true,
+        "macd_bull": true,
+        "atr_pct": 3.41,
+        "signals": [
+          "EMA bullish",
+          "MACD bullish"
+        ],
+        "actual": 416.04998779296875,
+        "delta_pct": -2.47,
+        "delta_abs": -10.52,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 416.04998779296875,
+        "pred_today": 420.4,
+        "pred_tomorrow": 423.31,
+        "confidence": "Medium",
+        "score": 63.0,
+        "rsi": 62.6,
+        "mom_5d": -1.07,
+        "trend_up": true,
+        "macd_bull": true,
+        "atr_pct": 3.49,
+        "signals": [
+          "EMA bullish",
+          "MACD bullish"
         ],
         "actual": null,
         "delta_pct": null,
@@ -53,6 +97,50 @@
           "Near upper Bollinger Band \u2014 extended",
           "5d momentum +3.3%"
         ],
+        "actual": 217.5,
+        "delta_pct": -2.06,
+        "delta_abs": -4.58,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-12",
+        "price_at_pred": 223.64500427246094,
+        "pred_today": 225.72,
+        "pred_tomorrow": 227.11,
+        "confidence": "Medium",
+        "score": 68.0,
+        "rsi": 61.1,
+        "mom_5d": 2.12,
+        "trend_up": true,
+        "macd_bull": true,
+        "atr_pct": 3.1,
+        "signals": [
+          "EMA bullish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
+        "actual": 224.08999633789062,
+        "delta_pct": -1.33,
+        "delta_abs": -3.02,
+        "direction_correct": true
+      },
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 224.08999633789062,
+        "pred_today": 226.17,
+        "pred_tomorrow": 227.55,
+        "confidence": "Medium",
+        "score": 68.0,
+        "rsi": 61.4,
+        "mom_5d": 2.33,
+        "trend_up": true,
+        "macd_bull": true,
+        "atr_pct": 3.09,
+        "signals": [
+          "EMA bullish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
         "actual": null,
         "delta_pct": null,
         "delta_abs": null,
@@ -77,6 +165,50 @@
           "MACD bullish cross",
           "EMA20 < EMA50 \u2014 downtrend",
           "5d momentum -12.7%"
+        ],
+        "actual": 1271.050048828125,
+        "delta_pct": 0.2,
+        "delta_abs": 2.52,
+        "direction_correct": true
+      },
+      {
+        "date": "2026-08-12",
+        "price_at_pred": 1377.1600341796875,
+        "pred_today": 1418.75,
+        "pred_tomorrow": 1446.47,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 42.3,
+        "mom_5d": 9.42,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 10.07,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
+        "actual": 1344.2900390625,
+        "delta_pct": -7.06,
+        "delta_abs": -102.18,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 1344.2900390625,
+        "pred_today": 1385.88,
+        "pred_tomorrow": 1413.6,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 41.0,
+        "mom_5d": 6.81,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 10.31,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
         ],
         "actual": null,
         "delta_pct": null,
@@ -103,6 +235,50 @@
           "EMA20 < EMA50 \u2014 downtrend",
           "5d momentum -13.2%"
         ],
+        "actual": 4.900000095367432,
+        "delta_pct": -2.0,
+        "delta_abs": -0.1,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-12",
+        "price_at_pred": 5.019999980926514,
+        "pred_today": 4.9,
+        "pred_tomorrow": 4.82,
+        "confidence": "Low",
+        "score": 44.0,
+        "rsi": 49.7,
+        "mom_5d": -11.62,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 8.06,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Weak 5d mom"
+        ],
+        "actual": 4.829999923706055,
+        "delta_pct": 0.21,
+        "delta_abs": 0.01,
+        "direction_correct": true
+      },
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 4.829999923706055,
+        "pred_today": 4.71,
+        "pred_tomorrow": 4.63,
+        "confidence": "Low",
+        "score": 44.0,
+        "rsi": 46.4,
+        "mom_5d": -14.96,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 8.46,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Weak 5d mom"
+        ],
         "actual": null,
         "delta_pct": null,
         "delta_abs": null,
@@ -128,6 +304,50 @@
           "EMA20 < EMA50 \u2014 downtrend",
           "5d momentum -4.7%"
         ],
+        "actual": 39.75,
+        "delta_pct": 0.68,
+        "delta_abs": 0.27,
+        "direction_correct": true
+      },
+      {
+        "date": "2026-08-12",
+        "price_at_pred": 42.369998931884766,
+        "pred_today": 43.46,
+        "pred_tomorrow": 44.18,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 52.4,
+        "mom_5d": 11.71,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 8.54,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
+        "actual": 43.66999816894531,
+        "delta_pct": -1.15,
+        "delta_abs": -0.51,
+        "direction_correct": true
+      },
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 43.66999816894531,
+        "pred_today": 44.76,
+        "pred_tomorrow": 45.48,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 53.9,
+        "mom_5d": 15.13,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 8.28,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
         "actual": null,
         "delta_pct": null,
         "delta_abs": null,
@@ -150,6 +370,50 @@
         "signals": [
           "EMA bearish",
           "MACD bullish"
+        ],
+        "actual": 212.30999755859375,
+        "delta_pct": 4.61,
+        "delta_abs": 9.36,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-12",
+        "price_at_pred": 223.11000061035156,
+        "pred_today": 227.35,
+        "pred_tomorrow": 230.17,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 54.8,
+        "mom_5d": 5.94,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 6.33,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
+        "actual": 217.0800018310547,
+        "delta_pct": -5.69,
+        "delta_abs": -13.09,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 217.0800018310547,
+        "pred_today": 221.38,
+        "pred_tomorrow": 224.25,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 52.9,
+        "mom_5d": 3.11,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 6.61,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
         ],
         "actual": null,
         "delta_pct": null,
@@ -175,6 +439,74 @@
           "MACD bullish",
           "Weak 5d mom"
         ],
+        "actual": 868.52001953125,
+        "delta_pct": 5.58,
+        "delta_abs": 45.9,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-12",
+        "price_at_pred": 923.280029296875,
+        "pred_today": 943.03,
+        "pred_tomorrow": 956.2,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 44.5,
+        "mom_5d": 4.74,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 7.13,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
+        "actual": 911.2899780273438,
+        "delta_pct": -4.7,
+        "delta_abs": -44.91,
+        "direction_correct": false
+      },
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 911.2899780273438,
+        "pred_today": 931.14,
+        "pred_tomorrow": 944.38,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 43.3,
+        "mom_5d": 3.38,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 7.26,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
+        "actual": null,
+        "delta_pct": null,
+        "delta_abs": null,
+        "direction_correct": null
+      }
+    ],
+    "BE": [
+      {
+        "date": "2026-08-13",
+        "price_at_pred": 237.16000366210938,
+        "pred_today": 244.17,
+        "pred_tomorrow": 248.84,
+        "confidence": "Low",
+        "score": 54.0,
+        "rsi": 55.4,
+        "mom_5d": 3.58,
+        "trend_up": false,
+        "macd_bull": true,
+        "atr_pct": 9.85,
+        "signals": [
+          "EMA bearish",
+          "MACD bullish",
+          "Strong 5d mom"
+        ],
         "actual": null,
         "delta_pct": null,
         "delta_abs": null,
@@ -184,5 +516,5 @@
   },
   "weights": {},
   "model_meta": {},
-  "last_update": "2026-08-11"
+  "last_update": "2026-08-13"
 }
