@@ -7322,6 +7322,175 @@ Return ONLY the JSON array, no other text."""
         return []
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# EARLY STAGE DISCOVERY ENGINE — Hidden Gem Framework
+# ══════════════════════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=600, show_spinner=False)
+def compute_hidden_gem_score(sym):
+    """
+    Score a stock as a 'hidden gem' early-stage opportunity.
+    Returns (score 0-100, breakdown_dict, features_dict) or None.
+    """
+    try:
+        tk   = yf.Ticker(sym)
+        info = tk.info or {}
+        hist = tk.history(period="1y", interval="1d")
+        if hist.empty:
+            return None
+
+        def si(k): return _safe_float(info.get(k))
+
+        price    = float(hist["Close"].iloc[-1])
+        mktcap   = si("marketCap") or 0
+        n_ana    = int(info.get("numberOfAnalystOpinions") or 0)
+        rev_g    = si("revenueGrowth") or 0
+        earn_g   = si("earningsGrowth") or 0
+        gross_m  = si("grossMargins") or 0
+        insider  = si("heldPercentInsiders") or 0
+        short_p  = si("shortPercentOfFloat") or 0
+        curr_r   = si("currentRatio") or 1
+        de       = si("debtToEquity") or 0
+        pe       = si("trailingPE")
+        ps       = si("priceToSalesTrailingTwelveMonths") or 0
+        fcf_y    = si("freeCashflow")
+        fcf_yield = (fcf_y / mktcap) if (fcf_y and mktcap > 0) else None
+
+        # Price momentum — we WANT flat/boring stock
+        close = hist["Close"].dropna()
+        mom_6m = (float(close.iloc[-1]) / float(close.iloc[-126]) - 1) if len(close) >= 126 else 0
+        mom_1y = (float(close.iloc[-1]) / float(close.iloc[-252]) - 1) if len(close) >= 252 else 0
+        vol_20d = float(close.pct_change().tail(20).std() * np.sqrt(252)) if len(close) >= 20 else 0.3
+
+        # ── 1. UNDISCOVERY score (0–35) ─────────────────────────────────
+        undis = 0
+        if   n_ana == 0:  undis += 20
+        elif n_ana <= 3:  undis += 15
+        elif n_ana <= 6:  undis += 8
+        elif n_ana <= 10: undis += 3
+        if   mktcap < 200e6:   undis += 10
+        elif mktcap < 500e6:   undis += 8
+        elif mktcap < 1e9:     undis += 5
+        elif mktcap < 2e9:     undis += 2
+        elif mktcap > 10e9:    undis -= 5
+        undis = max(0, min(35, undis))
+
+        # ── 2. FUNDAMENTAL quality (0–30) ───────────────────────────────
+        fund = 0
+        if   rev_g > 0.50:  fund += 15
+        elif rev_g > 0.30:  fund += 12
+        elif rev_g > 0.15:  fund += 8
+        elif rev_g > 0.05:  fund += 4
+        elif rev_g < -0.10: fund -= 5
+        if   gross_m > 0.60: fund += 8
+        elif gross_m > 0.40: fund += 5
+        elif gross_m > 0.20: fund += 2
+        elif gross_m < 0:    fund -= 8
+        if fcf_yield and fcf_yield > 0.03: fund += 5
+        elif fcf_yield and fcf_yield > 0:  fund += 2
+        elif curr_r > 2:                   fund += 2
+        if   de < 20:   fund += 2
+        elif de > 100:  fund -= 3
+        fund = max(0, min(30, fund))
+
+        # ── 3. EARLY TIMING score (0–25) ────────────────────────────────
+        timing = 0
+        if   -0.10 <= mom_6m <= 0.10:  timing += 15
+        elif  0.10 <  mom_6m <= 0.25:  timing += 8
+        elif  mom_6m > 0.40:           timing += 0
+        elif  mom_6m < -0.20:          timing += 5
+        if -0.15 <= mom_1y <= 0.20:    timing += 8
+        if 0.20 <= vol_20d <= 0.60:    timing += 2
+        timing = max(0, min(25, timing))
+
+        # ── 4. MANAGEMENT alignment (0–10) ──────────────────────────────
+        mgmt = 0
+        if insider > 0.20:   mgmt += 10
+        elif insider > 0.10: mgmt += 7
+        elif insider > 0.05: mgmt += 4
+        elif insider > 0.02: mgmt += 2
+        mgmt = max(0, min(10, mgmt))
+
+        total = undis + fund + timing + mgmt
+        if rev_g < -0.15 and gross_m < 0:
+            total = max(0, total - 20)
+
+        return {
+            "score":     round(float(total), 1),
+            "undis":     undis,
+            "fund":      fund,
+            "timing":    timing,
+            "mgmt":      mgmt,
+            "price":     round(price, 2),
+            "mktcap":    mktcap,
+            "n_ana":     n_ana,
+            "rev_g":     rev_g,
+            "gross_m":   gross_m,
+            "insider":   insider,
+            "mom_6m":    mom_6m,
+            "mom_1y":    mom_1y,
+            "vol_20d":   vol_20d,
+            "ps":        ps,
+            "pe":        pe,
+            "fcf_yield": fcf_yield,
+            "curr_r":    curr_r,
+            "de":        de,
+            "short_p":   short_p,
+            "name":      info.get("shortName") or info.get("longName") or sym,
+            "sector":    info.get("sector") or "Unknown",
+            "website":   info.get("website") or "",
+            "summary":   (info.get("longBusinessSummary") or "")[:400],
+        }
+    except Exception:
+        return None
+
+
+def compute_10x_potential(gem):
+    """
+    What needs to be true for this stock to 10x?
+    Returns plain-English analysis.
+    """
+    mktcap  = gem.get("mktcap", 0) or 0
+    rev_g   = gem.get("rev_g", 0) or 0
+    ps      = gem.get("ps", 0) or 0
+    gross_m = gem.get("gross_m", 0) or 0
+    n_ana   = gem.get("n_ana", 0)
+    lines   = []
+
+    if mktcap > 0:
+        target_mcap = mktcap * 10
+        lines.append(
+            f"**Market cap needed for 10x:** ${target_mcap/1e9:.1f}B "
+            f"(from current ${mktcap/1e9:.2f}B). "
+            f"{'This is realistic for a mid-cap leader in an emerging space.' if target_mcap < 20e9 else 'Would require becoming a major sector leader.'}"
+        )
+
+    if rev_g > 0 and ps > 0:
+        lines.append(
+            f"**Revenue path:** Currently growing {rev_g*100:.0f}% YoY. "
+            f"At current P/S ratio, needs sustained >30% growth for 3+ years to justify 10× valuation."
+        )
+
+    if n_ana <= 3:
+        lines.append(
+            f"**Analyst re-rating:** Only {n_ana} analyst(s) covering this stock. "
+            f"When a major bank initiates coverage, institutional money flows in. "
+            f"This alone can cause a 30-50% re-rating."
+        )
+
+    if gross_m > 0.40:
+        lines.append(
+            f"**Margin leverage:** {gross_m*100:.0f}% gross margin with operating leverage — "
+            f"as revenue scales, net margins expand significantly."
+        )
+
+    lines.append(
+        "**Key catalyst to watch:** Major contract/partnership announcement, "
+        "analyst initiation of coverage, or a major player (MSFT/Google/Amazon) investing or partnering."
+    )
+    return lines
+
+
 with main_tab2:  # ← replacement block starts here
     for _tab2_once in [True]:
         # ── Tab 2 sub-nav ─────────────────────────────────────────────────────────
@@ -12304,198 +12473,6 @@ Return ONLY the JSON array, no other text."""
             )
 
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# EARLY STAGE DISCOVERY ENGINE — Hidden Gem Framework
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Emerging industries with seed tickers, TAM context, and why they're undervalued
-# Hidden gem scoring weights — opposite of momentum screener
-# We WANT: low coverage, flat stock, great fundamentals
-
-@st.cache_data(ttl=600, show_spinner=False)
-def compute_hidden_gem_score(sym):
-    """
-    Score a stock as a 'hidden gem' early-stage opportunity.
-    Returns (score 0-100, breakdown_dict, features_dict) or None.
-    """
-    try:
-        tk   = yf.Ticker(sym)
-        info = tk.info or {}
-        hist = tk.history(period="1y", interval="1d")
-        if hist.empty:
-            return None
-
-        def si(k): return _safe_float(info.get(k))
-
-        price    = float(hist["Close"].iloc[-1])
-        mktcap   = si("marketCap") or 0
-        n_ana    = int(info.get("numberOfAnalystOpinions") or 0)
-        rev_g    = si("revenueGrowth") or 0
-        earn_g   = si("earningsGrowth") or 0
-        gross_m  = si("grossMargins") or 0
-        insider  = si("heldPercentInsiders") or 0
-        short_p  = si("shortPercentOfFloat") or 0
-        curr_r   = si("currentRatio") or 1
-        de       = si("debtToEquity") or 0
-        pe       = si("trailingPE")
-        ps       = si("priceToSalesTrailingTwelveMonths") or 0
-        fcf_y    = si("freeCashflow")
-        fcf_yield = (fcf_y / mktcap) if (fcf_y and mktcap > 0) else None
-
-        # Price momentum — we WANT flat/boring stock
-        close = hist["Close"].dropna()
-        mom_6m = (float(close.iloc[-1]) / float(close.iloc[-126]) - 1) if len(close) >= 126 else 0
-        mom_1y = (float(close.iloc[-1]) / float(close.iloc[-252]) - 1) if len(close) >= 252 else 0
-        vol_20d = float(close.pct_change().tail(20).std() * np.sqrt(252)) if len(close) >= 20 else 0.3
-
-        # ── 1. UNDISCOVERY score (0–35) ─────────────────────────────────
-        undis = 0
-        # Few analysts = undiscovered
-        if   n_ana == 0:  undis += 20
-        elif n_ana <= 3:  undis += 15
-        elif n_ana <= 6:  undis += 8
-        elif n_ana <= 10: undis += 3
-        # Small market cap = institutional money hasn't found it
-        if   mktcap < 200e6:   undis += 10
-        elif mktcap < 500e6:   undis += 8
-        elif mktcap < 1e9:     undis += 5
-        elif mktcap < 2e9:     undis += 2
-        elif mktcap > 10e9:    undis -= 5   # too large = already found
-        undis = max(0, min(35, undis))
-
-        # ── 2. FUNDAMENTAL quality (0–30) ───────────────────────────────
-        fund = 0
-        # Revenue growth — core signal
-        if   rev_g > 0.50:  fund += 15
-        elif rev_g > 0.30:  fund += 12
-        elif rev_g > 0.15:  fund += 8
-        elif rev_g > 0.05:  fund += 4
-        elif rev_g < -0.10: fund -= 5
-        # Gross margin
-        if   gross_m > 0.60: fund += 8
-        elif gross_m > 0.40: fund += 5
-        elif gross_m > 0.20: fund += 2
-        elif gross_m < 0:    fund -= 8
-        # FCF / cash strength
-        if fcf_yield and fcf_yield > 0.03: fund += 5
-        elif fcf_yield and fcf_yield > 0:  fund += 2
-        elif curr_r > 2:                   fund += 2   # healthy current ratio
-        # Debt — early companies should have low debt
-        if   de < 20:   fund += 2
-        elif de > 100:  fund -= 3
-        fund = max(0, min(30, fund))
-
-        # ── 3. EARLY TIMING score (0–25) ────────────────────────────────
-        # We WANT the stock NOT to have already run
-        timing = 0
-        # Stock flat or slightly down over 6M = still early
-        if   -0.10 <= mom_6m <= 0.10:  timing += 15   # sideways = perfect
-        elif  0.10 <  mom_6m <= 0.25:  timing += 8    # modest gains = maybe still early
-        elif  mom_6m > 0.40:           timing += 0    # already running
-        elif  mom_6m < -0.20:          timing += 5    # beaten down = high risk but opportunity
-        # 1Y flat = really undiscovered
-        if -0.15 <= mom_1y <= 0.20:    timing += 8
-        # Moderate volatility (not dead, not hyper volatile)
-        if 0.20 <= vol_20d <= 0.60:    timing += 2
-        timing = max(0, min(25, timing))
-
-        # ── 4. MANAGEMENT alignment (0–10) ──────────────────────────────
-        mgmt = 0
-        if insider > 0.20:  mgmt += 10   # >20% insider = skin in the game
-        elif insider > 0.10: mgmt += 7
-        elif insider > 0.05: mgmt += 4
-        elif insider > 0.02: mgmt += 2
-        mgmt = max(0, min(10, mgmt))
-
-        total = undis + fund + timing + mgmt
-
-        # Minimum bar: must have at least some growth
-        if rev_g < -0.15 and gross_m < 0:
-            total = max(0, total - 20)  # penalise deteriorating businesses
-
-        return {
-            "score":     round(float(total), 1),
-            "undis":     undis,
-            "fund":      fund,
-            "timing":    timing,
-            "mgmt":      mgmt,
-            "price":     round(price, 2),
-            "mktcap":    mktcap,
-            "n_ana":     n_ana,
-            "rev_g":     rev_g,
-            "gross_m":   gross_m,
-            "insider":   insider,
-            "mom_6m":    mom_6m,
-            "mom_1y":    mom_1y,
-            "vol_20d":   vol_20d,
-            "ps":        ps,
-            "pe":        pe,
-            "fcf_yield": fcf_yield,
-            "curr_r":    curr_r,
-            "de":        de,
-            "short_p":   short_p,
-            "name":      info.get("shortName") or info.get("longName") or sym,
-            "sector":    info.get("sector") or "Unknown",
-            "website":   info.get("website") or "",
-            "summary":   (info.get("longBusinessSummary") or "")[:400],
-        }
-    except Exception:
-        return None
-
-
-def compute_10x_potential(gem):
-    """
-    What needs to be true for this stock to 10x?
-    Returns plain-English analysis.
-    """
-    mktcap = gem.get("mktcap", 0) or 0
-    rev_g  = gem.get("rev_g", 0) or 0
-    ps     = gem.get("ps", 0) or 0
-    gross_m= gem.get("gross_m", 0) or 0
-    n_ana  = gem.get("n_ana", 0)
-
-    lines  = []
-
-    # Market cap headroom
-    if mktcap > 0:
-        target_mcap = mktcap * 10
-        lines.append(
-            f"**Market cap needed for 10x:** ${target_mcap/1e9:.1f}B "
-            f"(from current ${mktcap/1e9:.2f}B). "
-            f"{'This is realistic for a mid-cap leader in an emerging space.' if target_mcap < 20e9 else 'Would require becoming a major sector leader.'}"
-        )
-
-    # Revenue growth needed
-    if rev_g > 0 and ps > 0:
-        # At current P/S, revenue needs to grow X× to justify 10× market cap
-        rev_needed = 10 / max(ps / ps, 1)   # simplified
-        lines.append(
-            f"**Revenue path:** Currently growing {rev_g*100:.0f}% YoY. "
-            f"At current P/S ratio, needs sustained >30% growth for 3+ years to justify 10× valuation."
-        )
-
-    # Analyst re-rating
-    if n_ana <= 3:
-        lines.append(
-            f"**Analyst re-rating:** Only {n_ana} analyst(s) covering this stock. "
-            f"When a major bank initiates coverage, institutional money flows in. "
-            f"This alone can cause a 30-50% re-rating."
-        )
-
-    # Gross margin expansion
-    if gross_m > 0.40:
-        lines.append(
-            f"**Margin leverage:** {gross_m*100:.0f}% gross margin with operating leverage — "
-            f"as revenue scales, net margins expand significantly."
-        )
-
-    lines.append(
-        "**Key catalyst to watch:** Major contract/partnership announcement, "
-        "analyst initiation of coverage, or a major player (MSFT/Google/Amazon) investing or partnering."
-    )
-
-    return lines
 
 
 # ══════════════════════════════════════════════════════════════════════════════
