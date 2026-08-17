@@ -15022,30 +15022,20 @@ with main_tab7:
                             _acc_w = (_hpt_accuracy / 100) if _hpt_accuracy else 0.5
                             _pt_score_100 = float(np.clip(50 + _pt_upside * 300 * _acc_w, 0, 100))
 
-                    # ── Weighted composite score (0-100) ──────────────────
-                    _composite = (
-                        _hf_score_100 * _wp["w_hf"]   +
-                        _mtf_sc       * _wp["w_mtf"]  +
-                        _fund_sc      * _wp["w_fund"]  +
-                        _pt_score_100 * _wp["w_pt"]
-                    )
-
-                    # Hard penalty: EXIT_NOW signal drops score significantly
-                    if _hsig_type == "EXIT_NOW":
-                        _composite = max(0, _composite - 25)
-                    elif _hsig_type == "WATCH":
-                        _composite = max(0, _composite - 8)
-                    elif _hsig_type == "HOLD_BUY_DIP":
-                        _composite = min(100, _composite + 5)
-
                     _hpnl = ((_hclose - _havg) / _havg * 100) if _havg > 0 else None
 
+                    # Store raw layer scores — composite computed after loop (normalised)
                     _hub_results.append({
                         "symbol":        _hsym,
                         "price":         _hclose,
                         "avg_price":     _havg,
                         "pnl_pct":       _hpnl,
-                        "score":         round(_composite, 1),
+                        "score":         0,  # placeholder; recomputed below
+                        "_raw_hf":       _hf_score_100,
+                        "_raw_mtf":      _mtf_sc,
+                        "_raw_fund":     _fund_sc,
+                        "_raw_pt":       _pt_score_100,
+                        "_sig_type":     _hsig_type,
                         # Layer breakdown
                         "hf_score_100":  round(_hf_score_100, 1),
                         "mtf_score":     round(_mtf_sc, 1),
@@ -15092,6 +15082,47 @@ with main_tab7:
 
             _hub_progress.empty()
             _hub_status.empty()
+
+            # ── Normalise each layer across the batch so every layer spans
+            #    the same 0-100 range before weighting. Without this, fund_score
+            #    dominates because it has 3-4x more variance than HF/MTF.
+            _ok_res = [r for r in _hub_results if not r.get("error")]
+            for _layer in ("_raw_hf", "_raw_mtf", "_raw_fund", "_raw_pt"):
+                _vals = [r[_layer] for r in _ok_res if _layer in r]
+                if not _vals:
+                    continue
+                _lo, _hi = min(_vals), max(_vals)
+                _span = _hi - _lo
+                for r in _ok_res:
+                    if _layer not in r:
+                        continue
+                    if _span > 1:  # only normalise if there's actual spread
+                        r[_layer + "_n"] = (r[_layer] - _lo) / _span * 100
+                    else:
+                        r[_layer + "_n"] = 50.0  # all identical → neutral
+
+            for r in _ok_res:
+                _hfn   = r.get("_raw_hf_n",   r.get("_raw_hf",   50))
+                _mtfn  = r.get("_raw_mtf_n",  r.get("_raw_mtf",  50))
+                _fundn = r.get("_raw_fund_n",  r.get("_raw_fund", 50))
+                _ptn   = r.get("_raw_pt_n",   r.get("_raw_pt",   50))
+                _comp  = (
+                    _hfn   * _wp["w_hf"]  +
+                    _mtfn  * _wp["w_mtf"] +
+                    _fundn * _wp["w_fund"] +
+                    _ptn   * _wp["w_pt"]
+                )
+                _sig = r.pop("_sig_type", "HOLD")
+                if   _sig == "EXIT_NOW":      _comp = max(0,   _comp - 25)
+                elif _sig == "WATCH":         _comp = max(0,   _comp - 8)
+                elif _sig == "HOLD_BUY_DIP":  _comp = min(100, _comp + 5)
+                r["score"] = round(_comp, 1)
+                # store normalised breakdown for display
+                r["hf_score_100"]  = round(_hfn, 1)
+                r["mtf_score"]     = round(_mtfn, 1)
+                r["fund_score"]    = round(_fundn, 1)
+                r["pt_score"]      = round(_ptn, 1)
+
             _hub_results.sort(key=lambda x: x["score"], reverse=True)
             st.session_state["hub_results"]       = _hub_results
             st.session_state["hub_analysis_done"] = True
