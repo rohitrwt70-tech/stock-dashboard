@@ -15546,3 +15546,319 @@ with main_tab7:
             st.session_state["decision_log"] = _sorted_log
             st.success("Saved.")
             st.rerun()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # BACKTEST & VALIDATE
+    # ═══════════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("## 📊 Backtest & Validate")
+    st.caption(
+        "Rigorous historical backtest: for each stock in your Hub, the full 4-layer composite "
+        "score is recomputed on each past trading day using only data available up to that date. "
+        "Forward returns are then checked at +5, +10, +20 days to measure signal accuracy."
+    )
+
+    _bt_col1, _bt_col2, _bt_col3 = st.columns(3)
+    with _bt_col1:
+        _bt_lookback = st.selectbox("Lookback window", [60, 90, 120], index=1,
+                                     key="bt_lookback", help="How many past trading days to test")
+    with _bt_col2:
+        _bt_threshold = st.slider("BUY signal threshold (score ≥)", 45, 75, 60, 5,
+                                   key="bt_threshold", help="Score above this = model says BUY")
+    with _bt_col3:
+        _bt_mode = st.selectbox("Weight mode to backtest", ["intraday", "swing", "both"],
+                                 index=2, key="bt_mode")
+
+    _bt_syms = list({e["symbol"] for e in st.session_state.get("hub_data", {}).get("stocks", [])})
+    if not _bt_syms:
+        _bt_syms = st.session_state.get("hub_selected_syms", [])
+
+    if not _bt_syms:
+        st.info("Add stocks to My Stocks Hub first, then run the backtest.")
+    else:
+        st.caption(f"Will backtest {len(_bt_syms)} stocks over {_bt_lookback} days using **{_bt_mode}** weights.")
+        _bt_btn = st.button("🔬 Run Rigorous Backtest", key="bt_run", type="primary", use_container_width=True)
+
+        if _bt_btn:
+            import pandas as _bt_pd
+            import numpy as _bt_np
+
+            _BT_WEIGHT_PRESETS = {
+                "intraday": {"w_mtf": 0.40, "w_hf": 0.35, "w_fund": 0.10, "w_pt": 0.15},
+                "swing":    {"w_mtf": 0.10, "w_hf": 0.30, "w_fund": 0.40, "w_pt": 0.20},
+                "both":     {"w_mtf": 0.25, "w_hf": 0.25, "w_fund": 0.30, "w_pt": 0.20},
+            }
+            _btwp = _BT_WEIGHT_PRESETS[_bt_mode]
+
+            def _bt_compute_hf_score(close_s, high_s, low_s, vol_s):
+                """Recompute HF quant rules on a price slice. Returns raw score -12..+12."""
+                try:
+                    sc = 0
+                    c = close_s.values
+                    if len(c) < 20: return 0
+                    # Trend: EMA9 vs EMA20
+                    ema9  = float(close_s.ewm(span=9,  adjust=False).mean().iloc[-1])
+                    ema20 = float(close_s.ewm(span=20, adjust=False).mean().iloc[-1])
+                    ma20  = float(close_s.rolling(20).mean().iloc[-1])
+                    if ema9 > ema20: sc += 2
+                    if c[-1] > ma20: sc += 1
+                    # Momentum: RSI
+                    delta = close_s.diff().dropna()
+                    gain  = delta.clip(lower=0).rolling(14).mean().iloc[-1]
+                    loss  = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
+                    rsi   = 100 - 100 / (1 + gain / loss) if loss > 0 else 50
+                    if rsi > 55: sc += 2
+                    elif rsi < 45: sc -= 2
+                    # MACD histogram
+                    ema12 = close_s.ewm(span=12, adjust=False).mean()
+                    ema26 = close_s.ewm(span=26, adjust=False).mean()
+                    macd  = ema12 - ema26
+                    sig   = macd.ewm(span=9, adjust=False).mean()
+                    hist  = float((macd - sig).iloc[-1])
+                    if hist > 0: sc += 2
+                    elif hist < 0: sc -= 2
+                    # Volume surge
+                    vol_mean = float(vol_s.rolling(20).mean().iloc[-1])
+                    vol_now  = float(vol_s.iloc[-1])
+                    if vol_mean > 0 and vol_now > vol_mean * 1.5: sc += 2
+                    # Bollinger Bands
+                    bb_mid = float(close_s.rolling(20).mean().iloc[-1])
+                    bb_std = float(close_s.rolling(20).std().iloc[-1])
+                    bb_pct = (c[-1] - (bb_mid - 2*bb_std)) / (4*bb_std) * 100 if bb_std > 0 else 50
+                    if bb_pct > 70: sc += 1
+                    elif bb_pct < 30: sc -= 1
+                    # Price action: higher high
+                    if len(c) >= 5 and c[-1] > max(c[-6:-1]): sc += 2
+                    return max(-12, min(12, sc))
+                except Exception:
+                    return 0
+
+            def _bt_score_on_date(sym, hist_full, date_idx, fund_sc_today):
+                """Compute composite score at date_idx using only data up to that point."""
+                try:
+                    slice_end = date_idx + 1
+                    sl = hist_full.iloc[max(0, slice_end-252):slice_end]
+                    if len(sl) < 30:
+                        return None
+                    close_s = sl["Close"].dropna()
+                    high_s  = sl["High"].dropna()
+                    low_s   = sl["Low"].dropna()
+                    vol_s   = sl["Volume"].dropna()
+
+                    # HF score
+                    _hf_raw = _bt_compute_hf_score(close_s, high_s, low_s, vol_s)
+                    _hf_100 = float(_bt_np.clip((_hf_raw + 12) / 24 * 100, 0, 100))
+
+                    # MTF: approximate from daily data (1d candle voting)
+                    ema9d  = float(close_s.ewm(span=9,  adjust=False).mean().iloc[-1])
+                    ema20d = float(close_s.ewm(span=20, adjust=False).mean().iloc[-1])
+                    delta  = close_s.diff().dropna()
+                    gain   = delta.clip(lower=0).rolling(14).mean().iloc[-1]
+                    loss   = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
+                    rsi_d  = 100 - 100 / (1 + gain / loss) if loss > 0 else 50
+                    _mtf_votes = sum([ema9d > ema20d, rsi_d > 55, float(close_s.iloc[-1]) > float(close_s.rolling(20).mean().iloc[-1])])
+                    _mtf_100   = float(_bt_np.clip(50 + (_mtf_votes - 1.5) / 1.5 * 50, 0, 100))
+
+                    # PT score: neutral (no historical PT data available for past dates)
+                    _pt_100 = 50.0
+
+                    # Fund score: reuse today's fundamental (changes slowly, acceptable approximation)
+                    _fund_100 = float(fund_sc_today)
+
+                    raw_comp = (
+                        _hf_100   * _btwp["w_hf"]  +
+                        _mtf_100  * _btwp["w_mtf"] +
+                        _fund_100 * _btwp["w_fund"] +
+                        _pt_100   * _btwp["w_pt"]
+                    )
+                    return round(raw_comp, 1)
+                except Exception:
+                    return None
+
+            _bt_progress = st.progress(0, text="Starting backtest…")
+            _bt_status   = st.empty()
+            _bt_records  = []  # {sym, date, score, fwd5, fwd10, fwd20, signal}
+
+            for _bsi, _bsym in enumerate(_bt_syms):
+                _bt_progress.progress((_bsi + 1) / len(_bt_syms),
+                                       text=f"[{_bsi+1}/{len(_bt_syms)}] {_bsym}…")
+                _bt_status.caption(f"Fetching history for {_bsym}…")
+                try:
+                    _bth = yf.Ticker(_bsym).history(period="1y", interval="1d")
+                    if _bth is None or len(_bth) < 40:
+                        continue
+
+                    # Get today's fundamental score (cached)
+                    _btf = fetch_stock_features(_bsym)
+                    _bt_fund_sc = 50.0
+                    if _btf is not None:
+                        try:
+                            _btf2   = enrich_with_fundamentals(_btf.copy())
+                            _btrk   = normalise_universe({_bsym: _btf2})
+                            _btbkt  = classify_bucket(_btf2, _btrk)
+                            _bt_fund_sc, _ = score_stock(_btf2, _btrk, _btbkt)
+                        except Exception:
+                            pass
+
+                    # Rolling window: for each day in lookback, compute score and forward return
+                    _bth = _bth.reset_index()
+                    _bth_close = _bth["Close"].values
+                    _n = len(_bth)
+                    _start_idx = max(30, _n - _bt_lookback - 20)
+
+                    for _di in range(_start_idx, _n - 20):
+                        _score = _bt_score_on_date(
+                            _bsym,
+                            _bth.set_index("Date") if "Date" in _bth.columns else _bth.set_index(_bth.columns[0]),
+                            _di, _bt_fund_sc
+                        )
+                        if _score is None:
+                            continue
+                        _entry_px = float(_bth_close[_di])
+                        if _entry_px <= 0:
+                            continue
+                        _fwd5  = round((float(_bth_close[min(_di+5,  _n-1)]) / _entry_px - 1) * 100, 2)
+                        _fwd10 = round((float(_bth_close[min(_di+10, _n-1)]) / _entry_px - 1) * 100, 2)
+                        _fwd20 = round((float(_bth_close[min(_di+20, _n-1)]) / _entry_px - 1) * 100, 2)
+                        _sig   = "BUY" if _score >= _bt_threshold else "SKIP"
+                        _bt_records.append({
+                            "sym": _bsym, "score": _score, "signal": _sig,
+                            "fwd5": _fwd5, "fwd10": _fwd10, "fwd20": _fwd20,
+                            "entry_px": round(_entry_px, 2),
+                        })
+                except Exception:
+                    continue
+
+            _bt_progress.empty()
+            _bt_status.empty()
+            st.session_state["bt_records"] = _bt_records
+            st.session_state["bt_threshold"] = _bt_threshold
+            st.session_state["bt_mode_done"] = _bt_mode
+            st.rerun()
+
+        # ── Display backtest results ─────────────────────────────────────
+        if st.session_state.get("bt_records") is not None:
+            import pandas as _bt_pd2
+            import numpy as _bt_np2
+
+            _btr   = st.session_state["bt_records"]
+            _btthr = st.session_state.get("bt_threshold", _bt_threshold)
+            _btmd  = st.session_state.get("bt_mode_done", _bt_mode)
+
+            if not _btr:
+                st.warning("No backtest data — stocks may have insufficient history.")
+            else:
+                _buy_r  = [r for r in _btr if r["signal"] == "BUY"]
+                _skip_r = [r for r in _btr if r["signal"] == "SKIP"]
+
+                st.markdown(f"### Results — {_btmd.title()} mode · threshold {_btthr}")
+                st.caption(f"{len(_btr)} total observations · {len(_buy_r)} BUY signals · {len(_skip_r)} SKIP signals")
+
+                # ── Key metrics ──────────────────────────────────────────
+                def _acc(records, horizon):
+                    vals = [r[horizon] for r in records if r.get(horizon) is not None]
+                    if not vals: return None, None, None
+                    acc = sum(1 for v in vals if v > 0) / len(vals) * 100
+                    avg = float(_bt_np2.mean(vals))
+                    med = float(_bt_np2.median(vals))
+                    return round(acc, 1), round(avg, 2), round(med, 2)
+
+                _m1, _m2, _m3, _m4 = st.columns(4)
+                _b5acc, _b5avg, _b5med = _acc(_buy_r, "fwd5")
+                _s5acc, _s5avg, _s5med = _acc(_skip_r, "fwd5")
+                _b20acc, _b20avg, _b20med = _acc(_buy_r, "fwd20")
+
+                with _m1:
+                    if _b5acc is not None:
+                        _c = "#00c853" if _b5acc >= 55 else "#ff9800" if _b5acc >= 45 else "#ff5252"
+                        st.markdown(f"<div style='text-align:center;padding:12px;border:1px solid {_c};border-radius:8px'>"
+                                    f"<div style='font-size:2rem;font-weight:900;color:{_c}'>{_b5acc}%</div>"
+                                    f"<div style='color:#888;font-size:0.8rem'>BUY accuracy (5d)</div>"
+                                    f"<div style='color:#aaa;font-size:0.75rem'>avg {_b5avg:+.2f}% · med {_b5med:+.2f}%</div>"
+                                    f"</div>", unsafe_allow_html=True)
+                with _m2:
+                    if _b20acc is not None:
+                        _c = "#00c853" if _b20acc >= 55 else "#ff9800" if _b20acc >= 45 else "#ff5252"
+                        st.markdown(f"<div style='text-align:center;padding:12px;border:1px solid {_c};border-radius:8px'>"
+                                    f"<div style='font-size:2rem;font-weight:900;color:{_c}'>{_b20acc}%</div>"
+                                    f"<div style='color:#888;font-size:0.8rem'>BUY accuracy (20d)</div>"
+                                    f"<div style='color:#aaa;font-size:0.75rem'>avg {_b20avg:+.2f}% · med {_b20med:+.2f}%</div>"
+                                    f"</div>", unsafe_allow_html=True)
+                with _m3:
+                    if _b5avg is not None and _s5avg is not None:
+                        _edge = round(_b5avg - _s5avg, 2)
+                        _c = "#00c853" if _edge > 0.5 else "#ff9800" if _edge > 0 else "#ff5252"
+                        st.markdown(f"<div style='text-align:center;padding:12px;border:1px solid {_c};border-radius:8px'>"
+                                    f"<div style='font-size:2rem;font-weight:900;color:{_c}'>{_edge:+.2f}%</div>"
+                                    f"<div style='color:#888;font-size:0.8rem'>Edge vs SKIP (5d avg)</div>"
+                                    f"<div style='color:#aaa;font-size:0.75rem'>BUY {_b5avg:+.2f}% vs SKIP {_s5avg:+.2f}%</div>"
+                                    f"</div>", unsafe_allow_html=True)
+                with _m4:
+                    _n_buy_sigs = len(_buy_r)
+                    _hit_rate_20 = round(sum(1 for r in _buy_r if r["fwd20"] > 2) / max(1, _n_buy_sigs) * 100, 1)
+                    _c = "#00c853" if _hit_rate_20 >= 55 else "#ff9800" if _hit_rate_20 >= 40 else "#ff5252"
+                    st.markdown(f"<div style='text-align:center;padding:12px;border:1px solid {_c};border-radius:8px'>"
+                                f"<div style='font-size:2rem;font-weight:900;color:{_c}'>{_hit_rate_20}%</div>"
+                                f"<div style='color:#888;font-size:0.8rem'>BUY signals > +2% in 20d</div>"
+                                f"<div style='color:#aaa;font-size:0.75rem'>{_n_buy_sigs} total BUY signals</div>"
+                                f"</div>", unsafe_allow_html=True)
+
+                # ── Score vs return scatter (binned) ─────────────────────
+                st.markdown("#### Score Buckets vs Average Forward Return")
+                st.caption("Higher score should → higher return. If not, the model needs recalibration.")
+                _bins = [(0,40),(40,50),(50,60),(60,70),(70,80),(80,100)]
+                _bin_rows = []
+                for _blo, _bhi in _bins:
+                    _in_bin = [r for r in _btr if _blo <= r["score"] < _bhi]
+                    if not _in_bin: continue
+                    _bin_rows.append({
+                        "Score bucket":   f"{_blo}–{_bhi}",
+                        "# signals":      len(_in_bin),
+                        "Avg return 5d":  round(float(_bt_np2.mean([r["fwd5"]  for r in _in_bin])), 2),
+                        "Avg return 10d": round(float(_bt_np2.mean([r["fwd10"] for r in _in_bin])), 2),
+                        "Avg return 20d": round(float(_bt_np2.mean([r["fwd20"] for r in _in_bin])), 2),
+                        "Win rate 5d":    f"{sum(1 for r in _in_bin if r['fwd5']>0)/len(_in_bin)*100:.0f}%",
+                        "Win rate 20d":   f"{sum(1 for r in _in_bin if r['fwd20']>0)/len(_in_bin)*100:.0f}%",
+                    })
+                if _bin_rows:
+                    st.dataframe(_bt_pd2.DataFrame(_bin_rows), use_container_width=True, hide_index=True)
+
+                # ── Per-stock breakdown ──────────────────────────────────
+                st.markdown("#### Per-Stock Signal Accuracy")
+                _sym_rows = []
+                for _bsym2 in sorted(set(r["sym"] for r in _btr)):
+                    _sr = [r for r in _btr if r["sym"] == _bsym2 and r["signal"] == "BUY"]
+                    if not _sr: continue
+                    _sym_rows.append({
+                        "Symbol":       _bsym2,
+                        "BUY signals":  len(_sr),
+                        "Avg score":    round(float(_bt_np2.mean([r["score"] for r in _sr])), 1),
+                        "Accuracy 5d":  f"{sum(1 for r in _sr if r['fwd5']>0)/len(_sr)*100:.0f}%",
+                        "Avg ret 5d":   f"{float(_bt_np2.mean([r['fwd5']  for r in _sr])):+.2f}%",
+                        "Accuracy 20d": f"{sum(1 for r in _sr if r['fwd20']>0)/len(_sr)*100:.0f}%",
+                        "Avg ret 20d":  f"{float(_bt_np2.mean([r['fwd20'] for r in _sr])):+.2f}%",
+                    })
+                if _sym_rows:
+                    _sym_df = _bt_pd2.DataFrame(_sym_rows).sort_values("Avg ret 20d", ascending=False)
+                    st.dataframe(_sym_df, use_container_width=True, hide_index=True)
+
+                # ── Weight optimiser suggestion ──────────────────────────
+                st.markdown("#### Weight Optimiser Suggestion")
+                st.caption("Which score range produced the best 20d returns? Use this to tune your threshold.")
+                _best_bin = max(_bin_rows, key=lambda x: x["Avg return 20d"]) if _bin_rows else None
+                if _best_bin:
+                    _verdict_color = "#00c853" if _best_bin["Avg return 20d"] > 1 else "#ff9800"
+                    st.markdown(
+                        f"<div style='padding:12px;border-left:4px solid {_verdict_color};background:{_verdict_color}18'>"
+                        f"Best performing score bucket: <b>{_best_bin['Score bucket']}</b> "
+                        f"→ avg 20d return <b style='color:{_verdict_color}'>{_best_bin['Avg return 20d']:+.2f}%</b> "
+                        f"over {_best_bin['# signals']} signals.<br>"
+                        f"<span style='color:#888'>Suggestion: set your BUY threshold to <b>{_best_bin['Score bucket'].split('–')[0]}</b> "
+                        f"for {_btmd} mode on this stock universe.</span>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+
+                if st.button("🗑 Clear Backtest Results", key="bt_clear"):
+                    st.session_state.pop("bt_records", None)
+                    st.rerun()
