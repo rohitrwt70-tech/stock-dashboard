@@ -14908,104 +14908,67 @@ with main_tab7:
                 else:          _lbl = "MIXED / WAIT"
                 return _mtf_sc, _bv, _sv, _lbl
 
-            # ── helper: fundamentals + score_stock layer (0-100) ──────────
-            def _hub_fundamental_score(sym):
-                """Fetch 1y daily + yf.info → run full score_stock + DCF + MC engine.
-                Returns (score 0-100, breakdown, features, fund_verdict, mc_verdict, mc_result)."""
-                try:
-                    _f = fetch_stock_features(sym)
-                    if _f is None:
-                        return 50, {}, {}, "—", "—", None
-                    _f = enrich_with_fundamentals(_f)
-                    _ranked = normalise_universe({sym: _f})
-                    _bkt    = classify_bucket(_f, _ranked)
-                    _sc, _bkdn = score_stock(_f, _ranked, _bkt)
-
-                    # Fundamental verdict from score + DCF
-                    _dcf = compute_dcf(_f)
-                    if _dcf and _dcf.get("verdict"):
-                        _fund_v = _dcf["verdict"]  # STRONG BUY / BUY / HOLD / SELL / STRONG SELL
-                    else:
-                        # Fall back to score_stock score
-                        if _sc >= 70:   _fund_v = "STRONG BUY"
-                        elif _sc >= 58: _fund_v = "BUY"
-                        elif _sc >= 44: _fund_v = "HOLD"
-                        elif _sc >= 30: _fund_v = "SELL"
-                        else:           _fund_v = "STRONG SELL"
-
-                    # Monte Carlo verdict
-                    _mc = None
-                    _mc_v = "—"
-                    try:
-                        _mc = monte_carlo_targets(_f, n_simulations=2000)
-                        if _mc:
-                            _mc3m_prob = _mc.get("3M", {}).get("prob_up", 50)
-                            _mc3m_ret  = _mc.get("3M", {}).get("ret_base", 0)
-                            _mc_bullish = _mc3m_prob >= 60 and _mc3m_ret > 0
-                            _mc_bearish = _mc3m_prob < 45 or _mc3m_ret < -5
-                            if _mc_bullish and _sc >= 65:   _mc_v = "STRONG BUY"
-                            elif _mc_bullish:               _mc_v = "BUY"
-                            elif _mc_bearish:               _mc_v = "SELL"
-                            else:                           _mc_v = "HOLD"
-                    except Exception:
-                        pass
-
-                    return _sc, _bkdn, _f, _fund_v, _mc_v, _mc
-                except Exception:
-                    return 50, {}, {}, "—", "—", None
-
-            # ── main analysis loop ────────────────────────────────────────
-            _hub_feat_map = {}  # sym → features (for normalise later)
-            _hub_raw      = []  # partial results before final scoring
+            # ══════════════════════════════════════════════════════════════
+            # PASS 1 — fetch all data (technical + MTF + features)
+            # Fundamental scoring happens in Pass 2 after normalise_universe
+            # is called on the FULL batch — single-stock ranking always returns
+            # 1.0 for every metric which destroys differentiation.
+            # ══════════════════════════════════════════════════════════════
+            _hub_pass1   = []   # partial results per stock
+            _hub_feat_map = {}  # sym → enriched features for batch normalisation
 
             for _hi, _hsym in enumerate(_selected_syms):
                 _hentry = _selected_map.get(_hsym, {"symbol": _hsym})
                 _havg   = _hentry.get("avg_price", 0) or 0
-                _pct_done = (_hi + 1) / _total
-                _hub_progress.progress(_pct_done, text=f"[{_hi+1}/{_total}] {_hsym} — fetching data…")
-
+                _hub_progress.progress((_hi + 1) / _total / 2,
+                                       text=f"[Pass 1 · {_hi+1}/{_total}] {_hsym} — fetching…")
                 try:
-                    # Layer 1: intraday candles for live signals + HF rules
+                    # ── Intraday candles (HF rules + MTF) ────────────────
                     _hdf5m = _fetch_live_candles(_hsym, "5m", "5d")
                     if _hdf5m is None or len(_hdf5m) < 20:
                         _hdf5m = _fetch_live_candles(_hsym, "1d", "3mo")
                     if _hdf5m is None or len(_hdf5m) < 10:
-                        _hub_results.append({"symbol": _hsym, "error": "No price data", "score": -999,
-                                             "avg_price": _havg, "source": _hentry.get("source","—")})
+                        _hub_pass1.append({"symbol": _hsym, "error": "No price data",
+                                           "score": -999, "avg_price": _havg,
+                                           "source": _hentry.get("source","—")})
                         continue
 
-                    _hub_status.caption(f"⚙️ {_hsym} — computing live signals…")
-                    _hsig      = _compute_live_signals(_hdf5m)
-                    _hhfr      = _hedge_fund_rules(_hdf5m)
+                    _hub_status.caption(f"⚙️ {_hsym} — HF rules + MTF…")
+                    _hsig        = _compute_live_signals(_hdf5m)
+                    _hhfr        = _hedge_fund_rules(_hdf5m)
                     _hres, _hsup = _compute_sr_levels(_hdf5m)
-                    _htgt      = _compute_targets(_hdf5m, _hres, _hsup)
+                    _htgt        = _compute_targets(_hdf5m, _hres, _hsup)
 
-                    _hclose  = float(_hdf5m["Close"].dropna().iloc[-1])
-                    _hrsi    = _hsig.get("rsi") or 50
-                    _hmh     = _hsig.get("macd_hist") or 0
-                    _hbbp    = _hsig.get("bb_pct") or 50
-                    _hvol    = _hsig.get("vol_z") or 0
-                    _hhf_sc  = _hhfr.get("score", 0)
+                    _hclose    = float(_hdf5m["Close"].dropna().iloc[-1])
+                    _hrsi      = _hsig.get("rsi") or 50
+                    _hmh       = _hsig.get("macd_hist") or 0
+                    _hbbp      = _hsig.get("bb_pct") or 50
+                    _hvol      = _hsig.get("vol_z") or 0
+                    _hhf_sc    = _hhfr.get("score", 0)
+                    _hhf_max   = _hhfr.get("max_score", 1) or 1
                     _hsig_type = _hsig.get("signal", "HOLD")
 
-                    # Layer 1 score: HF quant rules → normalise to 0-100
-                    # Use actual max_score so ratio is meaningful across stocks
-                    _hhf_max = _hhfr.get("max_score", 1) or 1
+                    # HF score: ratio of actual score to max possible → 0-100
                     _hf_score_100 = float(np.clip((_hhf_sc / _hhf_max + 1) / 2 * 100, 0, 100))
 
-                    # Layer 2: multi-timeframe confluence
-                    _hub_status.caption(f"⚙️ {_hsym} — multi-timeframe confluence…")
+                    # MTF confluence
+                    _hub_status.caption(f"⚙️ {_hsym} — multi-timeframe…")
                     _mtf_sc, _mtf_bv, _mtf_sv, _mtf_lbl = _hub_mtf_score(_hsym)
 
-                    # Layer 3: fundamentals + full score_stock + DCF + MC (0-100)
-                    _hub_status.caption(f"⚙️ {_hsym} — fundamental + Monte Carlo analysis…")
-                    _fund_sc, _fund_bkdn, _hfeats, _fund_verdict, _mc_verdict, _hmc = _hub_fundamental_score(_hsym)
+                    # ── Fetch & enrich features for batch normalisation ───
+                    _hub_status.caption(f"⚙️ {_hsym} — fundamentals…")
+                    _hf = fetch_stock_features(_hsym)
+                    if _hf is not None:
+                        _hf = enrich_with_fundamentals(_hf)
+                        _hub_feat_map[_hsym] = _hf
+                    else:
+                        _hub_feat_map[_hsym] = {"symbol": _hsym, "price": _hclose}
 
-                    # Layer 4: Prediction tracker signal
+                    # ── PT signal ────────────────────────────────────────
                     _hpt_data     = _ptd_hub.get("records", {}).get(_hsym, [])
                     _hpt_pred_tmr = None
                     _hpt_accuracy = None
-                    _pt_score_100 = 50  # neutral default
+                    _pt_score_100 = 50
                     if _hpt_data:
                         for _hpr in sorted(_hpt_data, key=lambda x: x.get("date",""), reverse=True):
                             if _hpr.get("pred_tomorrow"):
@@ -15019,37 +14982,20 @@ with main_tab7:
                             _hpt_accuracy = _hpt_right / len(_hpt_correct) * 100
                         if _hpt_pred_tmr and _hclose > 0:
                             _pt_upside = (_hpt_pred_tmr - _hclose) / _hclose
-                            # Upside >3% bullish, <-3% bearish, accuracy-weighted
                             _acc_w = (_hpt_accuracy / 100) if _hpt_accuracy else 0.5
                             _pt_score_100 = float(np.clip(50 + _pt_upside * 300 * _acc_w, 0, 100))
 
                     _hpnl = ((_hclose - _havg) / _havg * 100) if _havg > 0 else None
 
-                    # Store raw layer scores — composite computed after loop (normalised)
-                    _hub_results.append({
+                    _hub_pass1.append({
                         "symbol":        _hsym,
                         "price":         _hclose,
                         "avg_price":     _havg,
                         "pnl_pct":       _hpnl,
-                        "score":         0,  # placeholder; recomputed below
                         "_raw_hf":       _hf_score_100,
                         "_raw_mtf":      _mtf_sc,
-                        "_raw_fund":     _fund_sc,
                         "_raw_pt":       _pt_score_100,
                         "_sig_type":     _hsig_type,
-                        # Layer breakdown
-                        "hf_score_100":  round(_hf_score_100, 1),
-                        "mtf_score":     round(_mtf_sc, 1),
-                        "fund_score":    round(_fund_sc, 1),
-                        "pt_score":      round(_pt_score_100, 1),
-                        # Sub-scores from score_stock
-                        "tech_score":    _fund_bkdn.get("technical", 0),
-                        "fund_sub":      _fund_bkdn.get("fundamental", 0),
-                        "risk_score":    _fund_bkdn.get("risk", 0),
-                        "sent_score":    _fund_bkdn.get("sentiment", 0),
-                        "fund_verdict":  _fund_verdict,
-                        "mc_verdict":    _mc_verdict,
-                        # Raw indicators
                         "rsi":           _hrsi,
                         "macd_hist":     _hmh,
                         "bb_pct":        _hbbp,
@@ -15060,15 +15006,6 @@ with main_tab7:
                         "mtf_label":     _mtf_lbl,
                         "mtf_buy_votes": _mtf_bv,
                         "mtf_sell_votes":_mtf_sv,
-                        # Fundamental data
-                        "pe":            _hfeats.get("pe"),
-                        "roe":           _hfeats.get("roe"),
-                        "net_margin":    _hfeats.get("net_margin"),
-                        "rev_growth":    _hfeats.get("rev_growth"),
-                        "beta":          _hfeats.get("beta"),
-                        "analyst_upside":_hfeats.get("analyst_upside"),
-                        "sector":        _hfeats.get("sector", "—"),
-                        # Targets
                         "pred_tomorrow": _hpt_pred_tmr,
                         "pt_accuracy":   _hpt_accuracy,
                         "fib_target":    _htgt.get("fib_100", 0),
@@ -15076,10 +15013,77 @@ with main_tab7:
                         "source":        _hentry.get("source", "—"),
                         "error":         None,
                     })
-
                 except Exception as _herr:
-                    _hub_results.append({"symbol": _hsym, "error": str(_herr), "score": -999,
-                                         "avg_price": _havg, "source": _hentry.get("source","—")})
+                    _hub_pass1.append({"symbol": _hsym, "error": str(_herr), "score": -999,
+                                       "avg_price": _havg, "source": _hentry.get("source","—")})
+
+            # ══════════════════════════════════════════════════════════════
+            # PASS 2 — batch normalise universe THEN score each stock
+            # normalise_universe needs the full dict to compute meaningful
+            # percentile ranks; calling it per-stock always returns 1.0.
+            # ══════════════════════════════════════════════════════════════
+            _hub_status.caption("⚙️ Normalising universe and scoring fundamentals…")
+            _hub_ranked = normalise_universe(_hub_feat_map) if _hub_feat_map else {}
+
+            _ok_pass1  = [r for r in _hub_pass1 if not r.get("error")]
+            _err_pass1 = [r for r in _hub_pass1 if r.get("error")]
+
+            for _hi2, _p1 in enumerate(_ok_pass1):
+                _hub_progress.progress(0.5 + (_hi2 + 1) / max(len(_ok_pass1), 1) * 0.5,
+                                       text=f"[Pass 2 · {_hi2+1}/{len(_ok_pass1)}] scoring {_p1['symbol']}…")
+                _hsym2 = _p1["symbol"]
+                try:
+                    _hf2   = _hub_feat_map.get(_hsym2, {"symbol": _hsym2})
+                    _bkt2  = classify_bucket(_hf2, _hub_ranked)
+                    _sc2, _bkdn2 = score_stock(_hf2, _hub_ranked, _bkt2)
+
+                    # DCF verdict
+                    _dcf2 = compute_dcf(_hf2)
+                    if _dcf2 and _dcf2.get("verdict"):
+                        _fund_v2 = _dcf2["verdict"]
+                    else:
+                        if   _sc2 >= 70: _fund_v2 = "STRONG BUY"
+                        elif _sc2 >= 58: _fund_v2 = "BUY"
+                        elif _sc2 >= 44: _fund_v2 = "HOLD"
+                        elif _sc2 >= 30: _fund_v2 = "SELL"
+                        else:            _fund_v2 = "STRONG SELL"
+
+                    # Monte Carlo verdict
+                    _mc2_v = "—"
+                    try:
+                        _mc2 = monte_carlo_targets(_hf2, n_simulations=2000)
+                        if _mc2:
+                            _mc3m_prob2 = _mc2.get("3M", {}).get("prob_up", 50)
+                            _mc3m_ret2  = _mc2.get("3M", {}).get("ret_base", 0)
+                            _mc_bull2   = _mc3m_prob2 >= 60 and _mc3m_ret2 > 0
+                            _mc_bear2   = _mc3m_prob2 < 45 or _mc3m_ret2 < -5
+                            if _mc_bull2 and _sc2 >= 65: _mc2_v = "STRONG BUY"
+                            elif _mc_bull2:              _mc2_v = "BUY"
+                            elif _mc_bear2:              _mc2_v = "SELL"
+                            else:                        _mc2_v = "HOLD"
+                    except Exception:
+                        pass
+
+                    _p1.update({
+                        "_raw_fund":  _sc2,
+                        "fund_verdict": _fund_v2,
+                        "mc_verdict":   _mc2_v,
+                        "tech_score":   _bkdn2.get("technical", 0),
+                        "fund_sub":     _bkdn2.get("fundamental", 0),
+                        "risk_score":   _bkdn2.get("risk", 0),
+                        "sent_score":   _bkdn2.get("sentiment", 0),
+                        "pe":           _hf2.get("pe"),
+                        "roe":          _hf2.get("roe"),
+                        "net_margin":   _hf2.get("net_margin"),
+                        "rev_growth":   _hf2.get("rev_growth"),
+                        "beta":         _hf2.get("beta"),
+                        "analyst_upside": _hf2.get("analyst_upside"),
+                        "sector":       _hf2.get("sector", "—"),
+                    })
+                except Exception:
+                    _p1["_raw_fund"] = 50
+
+            _hub_results = _ok_pass1 + _err_pass1
 
             _hub_progress.empty()
             _hub_status.empty()
