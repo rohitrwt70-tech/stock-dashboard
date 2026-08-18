@@ -14883,7 +14883,7 @@ with main_tab7:
                         _rsi = _s.get("rsi") or 50
                         _mh  = _s.get("macd_hist") or 0
                         _bbp = _s.get("bb_pct") or 50
-                        _buy  = (1 if _rsi < 55 else 0) + (1 if _mh > 0 else 0) + (1 if _bbp < 70 else 0)
+                        _buy  = (1 if 45 < _rsi < 65 else 0) + (1 if _mh > 0 else 0) + (1 if _bbp < 60 else 0)
                         _sell = (1 if _rsi > 65 else 0) + (1 if _mh < 0 else 0) + (1 if _bbp > 75 else 0)
                         if _s.get("signal") == "EXIT_NOW":
                             _votes.append("SELL")
@@ -14989,8 +14989,9 @@ with main_tab7:
                     _hsig_type = _hsig.get("signal", "HOLD")
 
                     # Layer 1 score: HF quant rules → normalise to 0-100
-                    # _hhf_sc range is roughly -12 to +12; map to 0-100
-                    _hf_score_100 = float(np.clip((_hhf_sc + 12) / 24 * 100, 0, 100))
+                    # Use actual max_score so ratio is meaningful across stocks
+                    _hhf_max = _hhfr.get("max_score", 1) or 1
+                    _hf_score_100 = float(np.clip((_hhf_sc / _hhf_max + 1) / 2 * 100, 0, 100))
 
                     # Layer 2: multi-timeframe confluence
                     _hub_status.caption(f"⚙️ {_hsym} — multi-timeframe confluence…")
