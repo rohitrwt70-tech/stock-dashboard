@@ -13766,7 +13766,7 @@ with main_tab5:
         _macro_prompt = f"""You are the chief macro strategist at a $50B hedge fund. Analyse the current US market risk and provide a comprehensive crash probability assessment.
 
 CURRENT MARKET DATA:
-- VIX: {_vix:.1f if _vix else 'N/A'} {'(EXTREME FEAR)' if _vix and _vix>40 else '(HIGH FEAR)' if _vix and _vix>30 else '(ELEVATED)' if _vix and _vix>20 else '(CALM)'}
+- VIX: {f'{_vix:.1f}' if _vix else 'N/A'} {'(EXTREME FEAR)' if _vix and _vix>40 else '(HIGH FEAR)' if _vix and _vix>30 else '(ELEVATED)' if _vix and _vix>20 else '(CALM)'}
 - Yield Curve (10Y-3M): {f'{_yc_spread:+.2f}%' if _yc_spread else 'N/A'} {'— INVERTED (recession signal)' if _yc_spread and _yc_spread<0 else '— normal'}
 - S&P 500 3-month return: {f'{_sp_3m:+.1f}%' if _sp_3m else 'N/A'}
 - Credit Spreads (HYG 20d): {f'{_hyg_chg:+.1f}%' if _hyg_chg else 'N/A'}
