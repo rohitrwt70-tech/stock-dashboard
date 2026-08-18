@@ -1748,9 +1748,10 @@ def _fetch_yf_info(sym: str) -> dict:
 def enrich_with_fundamentals(f):
     """
     Fetch yfinance .info for a single stock and merge into feature dict.
-    Called ONLY for final picks (~15 stocks) — not during the mass scan.
-    Returns updated f dict in place.
+    Always works on a copy so the cached source dict is never mutated.
+    Returns enriched copy.
     """
+    f = f.copy()  # never mutate the cached dict from fetch_stock_features
     sym = f.get("symbol", "")
     try:
         info = _fetch_yf_info(sym)
@@ -14342,6 +14343,16 @@ with main_tab6:
 # ══════════════════════════════════════════════════════════════════════════════
 with main_tab7:
 
+    # ── Weight presets (defined here so always available for display) ────────
+    _HUB_WEIGHT_PRESETS = {
+        "intraday": {"w_mtf": 0.40, "w_hf": 0.35, "w_fund": 0.10, "w_pt": 0.15,
+                     "label": "⚡ Intraday", "horizon": "3 Months"},
+        "swing":    {"w_mtf": 0.10, "w_hf": 0.30, "w_fund": 0.40, "w_pt": 0.20,
+                     "label": "📈 Swing",    "horizon": "1 Year"},
+        "both":     {"w_mtf": 0.25, "w_hf": 0.25, "w_fund": 0.30, "w_pt": 0.20,
+                     "label": "⚖️ Both",     "horizon": "6 Months"},
+    }
+
     # ── Helpers ─────────────────────────────────────────────────────────────
     def _dlog_load():
         if DECISION_LOG_FILE.exists():
@@ -14839,16 +14850,6 @@ with main_tab7:
                 help="Balanced: MTF 25% · Quant 25% · Fundamentals 30% · Pred Tracker 20%",
             )
 
-        # Weights per mode
-        _HUB_WEIGHT_PRESETS = {
-            "intraday": {"w_mtf": 0.40, "w_hf": 0.35, "w_fund": 0.10, "w_pt": 0.15,
-                         "label": "⚡ Intraday"},
-            "swing":    {"w_mtf": 0.10, "w_hf": 0.30, "w_fund": 0.40, "w_pt": 0.20,
-                         "label": "📈 Swing"},
-            "both":     {"w_mtf": 0.25, "w_hf": 0.25, "w_fund": 0.30, "w_pt": 0.20,
-                         "label": "⚖️ Both"},
-        }
-
         _run_mode = None
         if _btn_intraday: _run_mode = "intraday"
         elif _btn_swing:  _run_mode = "swing"
@@ -14872,19 +14873,32 @@ with main_tab7:
 
             # ── helper: MTF signal score (0-100) ─────────────────────────
             def _hub_mtf_score(sym):
-                """Fetch 1m/5m/15m, return (mtf_score 0-100, buy_votes, sell_votes, confluence_label)."""
+                """Fetch 1m/5m/15m (fall back to daily if intraday unavailable).
+                Returns (mtf_score 0-100, buy_votes, sell_votes, confluence_label)."""
                 _votes = []
-                for _iv, _per in [("1m","1d"), ("5m","5d"), ("15m","5d")]:
+                # Try intraday timeframes first; fall back to 1h then 1d slices
+                _tf_ladder = [("5m","5d"), ("15m","5d"), ("1h","1mo")]
+                for _iv, _per in _tf_ladder:
                     try:
                         _d = _fetch_live_candles(sym, _iv, _per)
-                        if _d is None or len(_d) < 10:
+                        # Require at least 20 bars; intraday data is thin when market closed
+                        if _d is None or len(_d) < 20:
                             continue
-                        _s = _compute_live_signals(_d)
+                        _s   = _compute_live_signals(_d)
                         _rsi = _s.get("rsi") or 50
                         _mh  = _s.get("macd_hist") or 0
                         _bbp = _s.get("bb_pct") or 50
-                        _buy  = (1 if 45 < _rsi < 65 else 0) + (1 if _mh > 0 else 0) + (1 if _bbp < 60 else 0)
-                        _sell = (1 if _rsi > 65 else 0) + (1 if _mh < 0 else 0) + (1 if _bbp > 75 else 0)
+
+                        # Correct buy/sell conditions:
+                        # BUY:  RSI in healthy momentum zone (45-65), MACD positive, not near BB upper
+                        # SELL: RSI overbought (>65), MACD negative, at BB upper band
+                        _buy  = (1 if 45 < _rsi < 65 else 0) + \
+                                (1 if _mh > 0 else 0) + \
+                                (1 if _bbp < 65 else 0)
+                        _sell = (1 if _rsi > 65 else 0) + \
+                                (1 if _mh < 0 else 0) + \
+                                (1 if _bbp > 75 else 0)
+
                         if _s.get("signal") == "EXIT_NOW":
                             _votes.append("SELL")
                         elif _sell >= 2:
@@ -14895,17 +14909,39 @@ with main_tab7:
                             _votes.append("NEUTRAL")
                     except Exception:
                         pass
+
+                # Fall back to daily if no intraday data (e.g. market closed, .NS stocks)
+                if not _votes:
+                    try:
+                        _d_daily = _fetch_live_candles(sym, "1d", "3mo")
+                        if _d_daily is not None and len(_d_daily) >= 20:
+                            _s_d = _compute_live_signals(_d_daily)
+                            _rsi_d = _s_d.get("rsi") or 50
+                            _mh_d  = _s_d.get("macd_hist") or 0
+                            _bbp_d = _s_d.get("bb_pct") or 50
+                            _buy_d  = (1 if 45 < _rsi_d < 65 else 0) + \
+                                      (1 if _mh_d > 0 else 0) + \
+                                      (1 if _bbp_d < 65 else 0)
+                            _sell_d = (1 if _rsi_d > 65 else 0) + \
+                                      (1 if _mh_d < 0 else 0) + \
+                                      (1 if _bbp_d > 75 else 0)
+                            # Count daily as all 3 votes (lower confidence — single TF)
+                            _vote_d = "BUY" if _buy_d >= 2 else "SELL" if _sell_d >= 2 else "NEUTRAL"
+                            _votes  = [_vote_d]  # 1 vote = lower confidence → scores 25/50/75 max
+                    except Exception:
+                        pass
+
                 if not _votes:
                     return 50, 0, 0, "NO DATA"
+
                 _bv = _votes.count("BUY")
                 _sv = _votes.count("SELL")
-                # Score: 3 BUY=100, 2 BUY=75, 1 BUY=55, all NEUTRAL=50, 1 SELL=35, 2 SELL=20, 3 SELL=0
                 _mtf_sc = max(0, min(100, 50 + (_bv - _sv) * 25))
-                if _bv >= 2:   _lbl = "STRONG BUY"
-                elif _bv == 1 and _sv == 0: _lbl = "MILD BUY"
-                elif _sv >= 2: _lbl = "STRONG SELL"
-                elif _sv == 1 and _bv == 0: _lbl = "MILD SELL"
-                else:          _lbl = "MIXED / WAIT"
+                if _bv >= 2:                   _lbl = "STRONG BUY"
+                elif _bv == 1 and _sv == 0:    _lbl = "MILD BUY"
+                elif _sv >= 2:                 _lbl = "STRONG SELL"
+                elif _sv == 1 and _bv == 0:    _lbl = "MILD SELL"
+                else:                          _lbl = "MIXED / WAIT"
                 return _mtf_sc, _bv, _sv, _lbl
 
             # ══════════════════════════════════════════════════════════════
@@ -14969,9 +15005,10 @@ with main_tab7:
                     _hpt_pred_tmr = None
                     _hpt_accuracy = None
                     _pt_score_100 = 50
+                    _pt_cutoff = (datetime.datetime.now() - datetime.timedelta(days=3)).strftime("%Y-%m-%d")
                     if _hpt_data:
                         for _hpr in sorted(_hpt_data, key=lambda x: x.get("date",""), reverse=True):
-                            if _hpr.get("pred_tomorrow"):
+                            if _hpr.get("pred_tomorrow") and _hpr.get("date","") >= _pt_cutoff:
                                 _hpt_pred_tmr = _hpr["pred_tomorrow"]
                                 break
                         _hpt_correct = [r for r in _hpt_data if r.get("actual") and r.get("pred_today")]
@@ -15035,7 +15072,8 @@ with main_tab7:
                 try:
                     _hf2   = _hub_feat_map.get(_hsym2, {"symbol": _hsym2})
                     _bkt2  = classify_bucket(_hf2, _hub_ranked)
-                    _sc2, _bkdn2 = score_stock(_hf2, _hub_ranked, _bkt2)
+                    _sc2, _bkdn2 = score_stock(_hf2, _hub_ranked, _bkt2,
+                                               inv_horizon=_wp.get("horizon", "1 Year"))
 
                     # DCF verdict
                     _dcf2 = compute_dcf(_hf2)
@@ -15082,6 +15120,12 @@ with main_tab7:
                     })
                 except Exception:
                     _p1["_raw_fund"] = 50
+
+            # Ensure every ok record has _raw_fund (fallback 50 if Pass 2 failed)
+            for _pr in _ok_pass1:
+                if "_raw_fund" not in _pr:
+                    _pr["_raw_fund"] = 50
+                _pr.setdefault("score", 0)
 
             _hub_results = _ok_pass1 + _err_pass1
 
