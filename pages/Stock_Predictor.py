@@ -1883,6 +1883,8 @@ FEATURE_COLS = [
 def normalise_universe(features_dict):
     """
     Compute per-column percentile ranks across the full universe.
+    Winsorizes at 1st/99th percentile before ranking so a single outlier
+    (e.g. PE=10000) cannot compress the entire universe into one corner.
     Returns dict {symbol: {col: percentile_0_to_1}}
     """
     rows = []
@@ -1895,6 +1897,14 @@ def normalise_universe(features_dict):
     df_u = pd.DataFrame(rows, columns=FEATURE_COLS, index=syms)
     df_u = df_u.apply(pd.to_numeric, errors="coerce")
     df_u = df_u.fillna(df_u.median())
+
+    # Winsorise: clip each column to its 1st–99th percentile range
+    # This prevents extreme outliers from distorting percentile ranks
+    if len(df_u) >= 5:
+        lo = df_u.quantile(0.01)
+        hi = df_u.quantile(0.99)
+        df_u = df_u.clip(lower=lo, upper=hi, axis=1)
+
     ranked = df_u.rank(pct=True)
     return ranked.to_dict(orient="index")
 
@@ -1989,6 +1999,29 @@ def score_stock(f, ranked, bucket_key, risk_pref="Moderate", inv_horizon="1 Year
         rv("rev_growth"), rv("earn_growth"), rv("fcf_yield"),
         1 - rv("de_ratio"), rv("curr_ratio"),
     ]
+
+    # Piotroski F-score proxy (0–9 quality flags, rescaled to 0–1)
+    # Widely used by quant funds to distinguish value traps from quality value
+    _roe_v       = float(f.get("roe")        or 0)
+    _fcf_v       = float(f.get("fcf_yield")  or 0)
+    _margin_v    = float(f.get("net_margin") or 0)
+    _rev_gr_v    = float(f.get("rev_growth") or 0)
+    _earn_gr_v   = float(f.get("earn_growth")or 0)
+    _curr_v      = float(f.get("curr_ratio") or 1)
+    _de_v        = float(f.get("de_ratio")   or 0)
+    _op_margin_v = float(f.get("op_margin")  or 0)
+    _piotroski = sum([
+        1 if _roe_v       > 0      else 0,   # positive ROE
+        1 if _fcf_v       > 0      else 0,   # positive FCF yield
+        1 if _margin_v    > 0      else 0,   # profitable (net margin > 0)
+        1 if _rev_gr_v    > 0.05   else 0,   # growing revenue (>5%)
+        1 if _earn_gr_v   > 0      else 0,   # growing earnings
+        1 if _curr_v      > 1.0    else 0,   # current ratio > 1 (liquid)
+        1 if _de_v        < 1.5    else 0,   # manageable leverage
+        1 if _op_margin_v > 0.08   else 0,   # operating margin > 8%
+        1 if (_fcf_v > 0 and _margin_v > 0) else 0,   # earnings quality
+    ])
+    fund.append(_piotroski / 9.0)  # add quality score as extra fundamental factor
     fund_score = float(np.clip(safe_mean(fund) * 100, 0, 100))
 
     # ── Risk ──────────────────────────────────────────────────────────────────
@@ -11169,20 +11202,125 @@ with main_tab2:  # ← replacement block starts here
             elif _ll:
                 _rule("Lower Lows", -1, 2, "Downtrend structure — price making lower lows", "Structure")
 
+        # ── ADX — TREND STRENGTH & REGIME ────────────────────────────────────────
+        # ADX > 25 = trending market; < 20 = ranging/choppy
+        # Regime matters: in ranging market, RSI/MACD signals have lower reliability
+        _adx = 20.0
+        _adx_trending = False
+        _di_bullish   = True
+        if len(high) >= 28 and len(low) >= 28:
+            try:
+                _hser  = high.iloc[-28:]
+                _lser  = low.iloc[-28:]
+                _cser  = close.iloc[-28:]
+                _tr_df = pd.concat([
+                    _hser.values - _lser.values,
+                    np.abs(_hser.values - _cser.shift(1).values),
+                    np.abs(_lser.values - _cser.shift(1).values),
+                ], axis=1) if False else pd.DataFrame({
+                    "hl":  _hser.values - _lser.values,
+                    "hpc": np.abs(_hser.values - np.concatenate([[np.nan], _cser.values[:-1]])),
+                    "lpc": np.abs(_lser.values - np.concatenate([[np.nan], _cser.values[:-1]])),
+                })
+                _tr14  = _tr_df.max(axis=1).rolling(14).mean()
+                _dm_p  = pd.Series(np.where(
+                    (_hser.values - np.concatenate([[0], _hser.values[:-1]])) >
+                    (np.concatenate([[0], _lser.values[:-1]]) - _lser.values),
+                    np.maximum(_hser.values - np.concatenate([[0], _hser.values[:-1]]), 0), 0
+                ))
+                _dm_n  = pd.Series(np.where(
+                    (np.concatenate([[0], _lser.values[:-1]]) - _lser.values) >
+                    (_hser.values - np.concatenate([[0], _hser.values[:-1]])),
+                    np.maximum(np.concatenate([[0], _lser.values[:-1]]) - _lser.values, 0), 0
+                ))
+                _di_p14 = 100 * _dm_p.rolling(14).mean() / (_tr14 + 1e-9)
+                _di_n14 = 100 * _dm_n.rolling(14).mean() / (_tr14 + 1e-9)
+                _dx     = 100 * (_di_p14 - _di_n14).abs() / (_di_p14 + _di_n14 + 1e-9)
+                _adx_s  = _dx.rolling(14).mean().dropna()
+                if len(_adx_s) > 0:
+                    _adx          = float(_adx_s.iloc[-1])
+                    _adx_trending = _adx > 25
+                    _di_bullish   = float(_di_p14.iloc[-1]) > float(_di_n14.iloc[-1])
+
+                if _adx > 35 and _di_bullish:
+                    _rule("ADX Strong Uptrend", 1, 3, f"ADX {_adx:.0f} — strong trend with +DI leading: momentum signals highly reliable", "Trend")
+                elif _adx > 25 and _di_bullish:
+                    _rule("ADX Uptrend Confirmed", 1, 2, f"ADX {_adx:.0f} — established uptrend, +DI above -DI", "Trend")
+                elif _adx > 35 and not _di_bullish:
+                    _rule("ADX Strong Downtrend", -1, 3, f"ADX {_adx:.0f} — strong downtrend: -DI leading, avoid longs", "Trend")
+                elif _adx > 25 and not _di_bullish:
+                    _rule("ADX Downtrend", -1, 2, f"ADX {_adx:.0f} — downtrend confirmed, -DI above +DI", "Trend")
+                else:
+                    _rule("ADX Ranging / Choppy", 0, 1, f"ADX {_adx:.0f} — no clear trend; oscillator signals less reliable", "Trend")
+            except Exception:
+                pass
+
+        # ── SUPERTREND PROXY (ATR-based) ──────────────────────────────────────────
+        # Price vs (midpoint ± 3×ATR14). Used systematically across quant strategies.
+        if len(close) >= 14:
+            try:
+                _h14  = high.iloc[-14:]
+                _l14  = low.iloc[-14:]
+                _c14  = close.iloc[-14:]
+                _cpr  = np.concatenate([[np.nan], _c14.values[:-1]])
+                _tr_v = np.nanmax([
+                    _h14.values - _l14.values,
+                    np.abs(_h14.values - _cpr),
+                    np.abs(_l14.values - _cpr),
+                ], axis=0)
+                _atr14_v = float(np.nanmean(_tr_v))
+                _mid_v   = (float(high.iloc[-1]) + float(low.iloc[-1])) / 2
+                _st_floor = _mid_v - 3 * _atr14_v
+                _st_ceil  = _mid_v + 3 * _atr14_v
+                if cur > _st_floor:
+                    _rule("Supertrend Bullish", 1, 2, f"Price {cur:.2f} > Supertrend floor {_st_floor:.2f} — bullish regime intact", "Trend")
+                else:
+                    _rule("Supertrend Bearish", -1, 2, f"Price {cur:.2f} < Supertrend ceiling {_st_ceil:.2f} — bearish regime", "Trend")
+            except Exception:
+                pass
+
+        # ── OBV TREND CONFIRMATION ────────────────────────────────────────────────
+        # Rising OBV = accumulation (smart money buying); falling = distribution
+        if len(volume) >= 20:
+            try:
+                _sign  = np.sign(close.diff().fillna(0))
+                _obv   = (volume * _sign).cumsum()
+                _obv_ma20 = float(_obv.rolling(20).mean().iloc[-1])
+                _obv_now  = float(_obv.iloc[-1])
+                if _obv_now > _obv_ma20 * 1.03:
+                    _rule("OBV Accumulation", 1, 2, f"OBV above 20-bar MA — sustained institutional accumulation", "Volume")
+                elif _obv_now < _obv_ma20 * 0.97:
+                    _rule("OBV Distribution", -1, 2, f"OBV below 20-bar MA — sustained institutional distribution", "Volume")
+            except Exception:
+                pass
+
+        # ── 200-DAY MA REGIME ─────────────────────────────────────────────────────
+        if len(close) >= 200:
+            _ma200 = float(close.rolling(200).mean().iloc[-1])
+            if cur > _ma200 * 1.02:
+                _rule("Above 200-day MA", 1, 2, f"Price above 200MA {_ma200:.2f} — long-term bull regime", "Trend")
+            elif cur < _ma200 * 0.98:
+                _rule("Below 200-day MA", -1, 2, f"Price below 200MA {_ma200:.2f} — long-term bear regime", "Trend")
+
         # ── COMPOSITE SCORE ───────────────────────────────────────────────────────
         total_score = sum(r["score"] for r in rules)
         max_score   = sum(r["strength"] for r in rules)
 
-        if total_score >= 8:      verdict = "STRONG BUY"
-        elif total_score >= 4:    verdict = "BUY"
-        elif total_score <= -8:   verdict = "STRONG SELL — EXIT"
-        elif total_score <= -4:   verdict = "SELL — REDUCE"
-        else:                     verdict = "HOLD / WATCH"
+        # Regime-adjusted verdict thresholds: stronger evidence required in ranging markets
+        _t_buy  = 4 if _adx_trending else 6
+        _t_sell = -4 if _adx_trending else -6
+
+        if total_score >= _t_buy + 4:    verdict = "STRONG BUY"
+        elif total_score >= _t_buy:      verdict = "BUY"
+        elif total_score <= _t_sell - 4: verdict = "STRONG SELL — EXIT"
+        elif total_score <= _t_sell:     verdict = "SELL — REDUCE"
+        else:                            verdict = "HOLD / WATCH"
 
         return {
             "verdict": verdict, "score": total_score, "max_score": max_score,
             "rsi": rsi, "bb_pct": bb_pct, "vol_ratio": vol_ratio,
             "macd_hist": h_now, "ema9": ema9, "ema20": ema20,
+            "adx": _adx, "adx_trending": _adx_trending,
             "rules": rules, "cur": cur,
         }
 
@@ -11237,6 +11375,47 @@ with main_tab2:  # ← replacement block starts here
             vol_z = (float(vol.iloc[-1]) - float(vol.mean())) / (float(vol.std()) + 1e-9) if len(vol) > 5 else 0
             price_up = float(close.iloc[-1]) >= float(close.iloc[-2])
 
+            # ── ADX: trend strength (determines if RSI/MACD signals are reliable) ──
+            adx = 20.0
+            adx_trending = False
+            try:
+                if len(df) >= 28 and "High" in df.columns and "Low" in df.columns:
+                    _ha = df["High"].dropna().iloc[-28:]
+                    _la = df["Low"].dropna().iloc[-28:]
+                    _ca = df["Close"].dropna().iloc[-28:]
+                    _c_prev = np.concatenate([[np.nan], _ca.values[:-1]])
+                    _trs = np.nanmax([_ha.values - _la.values,
+                                      np.abs(_ha.values - _c_prev),
+                                      np.abs(_la.values - _c_prev)], axis=0)
+                    _atr14 = pd.Series(_trs).rolling(14).mean()
+                    _hp = _ha.values - np.concatenate([[0], _ha.values[:-1]])
+                    _lp = np.concatenate([[0], _la.values[:-1]]) - _la.values
+                    _dmp = pd.Series(np.where((_hp > _lp) & (_hp > 0), _hp, 0.0))
+                    _dmn = pd.Series(np.where((_lp > _hp) & (_lp > 0), _lp, 0.0))
+                    _dip = 100 * _dmp.rolling(14).mean() / (_atr14 + 1e-9)
+                    _din = 100 * _dmn.rolling(14).mean() / (_atr14 + 1e-9)
+                    _dx  = 100 * (_dip - _din).abs() / (_dip + _din + 1e-9)
+                    _adxs = _dx.rolling(14).mean().dropna()
+                    if len(_adxs) > 0:
+                        adx = float(_adxs.iloc[-1])
+                        adx_trending = adx > 22
+            except Exception:
+                pass
+
+            # ── Stochastic %K/%D for confirmation ────────────────────────
+            stoch_k = 50.0
+            stoch_overbought = False
+            stoch_oversold   = False
+            try:
+                if len(df) >= 14 and "High" in df.columns and "Low" in df.columns:
+                    _hh14 = df["High"].rolling(14).max().iloc[-1]
+                    _ll14 = df["Low"].rolling(14).min().iloc[-1]
+                    stoch_k = float(100 * (price - _ll14) / (_hh14 - _ll14 + 1e-9))
+                    stoch_overbought = stoch_k > 80
+                    stoch_oversold   = stoch_k < 20
+            except Exception:
+                pass
+
             # ── Weakening signals (must be genuinely bearish) ────────────
             exit_reasons = []
             if rsi > 80:
@@ -11249,19 +11428,25 @@ with main_tab2:  # ← replacement block starts here
                 exit_reasons.append("MACD momentum fading")
             if bb_pct > 95:
                 exit_reasons.append(f"Price at BB upper extreme ({bb_pct:.0f}%)")
+            if stoch_overbought and rsi > 70:
+                exit_reasons.append(f"Stochastic overbought ({stoch_k:.0f}%)")
             # Volume surge on DOWN move = distribution (bearish) — but up-move is fine
             if vol_z > 2.5 and not price_up:
                 exit_reasons.append(f"High-volume sell-off ({vol_z:.1f}σ)")
 
             # ── Signal logic ─────────────────────────────────────────────
-            # EXIT_NOW: extreme overbought OR multiple confirming bearish signals
-            if rsi > 83:
+            # In a ranging market (ADX < 22), raise exit threshold — noise is high
+            rsi_exit_threshold = 83 if not adx_trending else 80
+
+            if rsi > rsi_exit_threshold:
                 signal = "EXIT_NOW"
             elif rsi > 75 and macd_hist < 0 and bb_pct > 90:
                 signal = "EXIT_NOW"  # RSI+MACD+BB all confirming
+            elif rsi > 75 and stoch_overbought and macd_turning_down:
+                signal = "EXIT_NOW"  # Stochastic confirms RSI + MACD fading
             elif len(exit_reasons) >= 2:
                 signal = "WATCH"
-            elif rsi < 35:
+            elif rsi < 35 or stoch_oversold:
                 signal = "HOLD_BUY_DIP"  # deeply oversold — pullback entry
             else:
                 signal = "HOLD"  # default: trend intact, stay in
@@ -11270,6 +11455,8 @@ with main_tab2:  # ← replacement block starts here
                 "signal": signal, "rsi": rsi, "macd": macd_val,
                 "macd_hist": macd_hist, "bb_pct": bb_pct, "price": price,
                 "exit_reasons": exit_reasons, "vol_z": vol_z,
+                "adx": adx, "adx_trending": adx_trending,
+                "stoch_k": stoch_k,
             }
         except Exception:
             return {"signal": "ERROR", "rsi": None}
@@ -13185,9 +13372,13 @@ with main_tab4:
                     # HOLD & RIDE: trend intact, MACD positive, RSI not extreme
                     # WAIT / MONITOR: mixed signals, no clear action
 
-                    _overbought  = _avg_rsi > 72
-                    _macd_fading = _avg_mh < 0
-                    _near_top_bb = _avg_bbp > 80
+                    _overbought  = _avg_rsi > 75
+                    # MACD fading: histogram must be negative AND declining (not merely negative)
+                    # A slightly negative histogram during a shallow pullback is normal in uptrends
+                    _mh_vals = [(_mtf_sig_data[i].get("macd_hist") or 0) for i in range(3)]
+                    _macd_fading = (_avg_mh < -0.001 and
+                                    sum(1 for v in _mh_vals if v < 0) >= 2)
+                    _near_top_bb = _avg_bbp > 85
                     _in_profit   = (_pnl_pct is not None and _pnl_pct > 0) or (_pnl_pct is None)
 
                     try:
@@ -15958,169 +16149,266 @@ with main_tab7:
 with main_tab8:
     st.markdown("## 🎲 Expectancy Calculator")
     st.markdown(
-        "Quantify the statistical edge of any trading strategy before you risk real money. "
-        "Enter your historical trade stats and see whether your system has positive expectancy."
+        "Institutional-grade edge quantification. Enter your trade stats to see "
+        "expectancy, Kelly position sizing, profit factor, Monte Carlo equity paths, "
+        "and the ruin probability at your current risk level."
     )
-
-    # ── Utility functions ────────────────────────────────────────────────────
-    def _ec_expectancy(win_rate: float, avg_win_r: float, avg_loss_r: float) -> float:
-        """Expected R per trade."""
-        return win_rate * avg_win_r - (1 - win_rate) * avg_loss_r
-
-    def _ec_std_error(win_rate: float, avg_win_r: float, avg_loss_r: float, n: int) -> float:
-        """Standard error of total-R estimate over n trades."""
-        if n <= 0:
-            return 0.0
-        e  = _ec_expectancy(win_rate, avg_win_r, avg_loss_r)
-        # variance of a single trade's R outcome
-        var = win_rate * (avg_win_r - e) ** 2 + (1 - win_rate) * (-avg_loss_r - e) ** 2
-        return (var / n) ** 0.5 * n  # std-dev of total R over n trades
-
-    def _ec_breakeven_wr(avg_win_r: float, avg_loss_r: float) -> float:
-        """Win rate needed for zero expectancy."""
-        if avg_win_r + avg_loss_r == 0:
-            return 0.0
-        return avg_loss_r / (avg_win_r + avg_loss_r)
 
     # ── Inputs ───────────────────────────────────────────────────────────────
     ec_col1, ec_col2 = st.columns([1, 1], gap="large")
 
     with ec_col1:
-        st.markdown("#### Inputs")
+        st.markdown("#### Trade Statistics")
         _ec_wr   = st.slider("Win Rate (%)", min_value=1, max_value=99, value=50, step=1,
                              help="% of trades that close in profit") / 100
         _ec_aw   = st.number_input("Avg Win (R multiples)", min_value=0.1, max_value=50.0,
                                    value=2.0, step=0.1,
-                                   help="Average profit expressed as a multiple of your initial risk (R)")
+                                   help="Average profit as a multiple of your initial risk (R)")
         _ec_al   = st.number_input("Avg Loss (R multiples)", min_value=0.1, max_value=50.0,
                                    value=1.0, step=0.1,
                                    help="Average loss as a multiple of R (enter positive number)")
         _ec_n    = st.number_input("Number of Trades", min_value=1, max_value=10000,
-                                   value=50, step=1,
-                                   help="Total number of trades in the sample (or planned)")
-        _ec_risk = st.number_input("Risk per Trade ($)", min_value=100, max_value=1_000_000,
-                                   value=10_000, step=500,
-                                   help="Dollar amount risked on each trade (1R in $)")
+                                   value=50, step=1)
+        _ec_risk_pct = st.slider("Risk per Trade (% of capital)", min_value=0.1, max_value=10.0,
+                                  value=1.0, step=0.1,
+                                  help="% of account risked per trade — used for Kelly and ruin calc")
+        _ec_capital  = st.number_input("Account Capital ($)", min_value=1000, max_value=10_000_000,
+                                       value=100_000, step=5000)
+        _ec_risk     = _ec_capital * _ec_risk_pct / 100  # 1R in dollars
 
-    # ── Calculations ─────────────────────────────────────────────────────────
-    _ec_exp   = _ec_expectancy(_ec_wr, _ec_aw, _ec_al)
-    _ec_total = _ec_exp * _ec_n
-    _ec_se    = _ec_std_error(_ec_wr, _ec_aw, _ec_al, _ec_n)
-    _ec_bew   = _ec_breakeven_wr(_ec_aw, _ec_al)
-    _ec_rr    = _ec_aw / _ec_al if _ec_al > 0 else 0
+    # ── Core calculations ─────────────────────────────────────────────────────
+    _ec_exp     = _ec_wr * _ec_aw - (1 - _ec_wr) * _ec_al          # expectancy per trade (R)
+    _ec_rr      = _ec_aw / _ec_al if _ec_al > 0 else 0             # reward/risk ratio
+    _ec_bew     = _ec_al / (_ec_aw + _ec_al) if (_ec_aw + _ec_al) > 0 else 0  # breakeven WR
+    _ec_total   = _ec_exp * int(_ec_n)                              # expected total R
+    _ec_total_usd = _ec_total * _ec_risk
 
-    _ec_total_usd    = _ec_total * _ec_risk
-    _ec_se_usd       = _ec_se    * _ec_risk
-    _ec_ci_lo        = _ec_total - 1.96 * _ec_se
-    _ec_ci_hi        = _ec_total + 1.96 * _ec_se
-    _ec_ci_lo_usd    = _ec_ci_lo * _ec_risk
-    _ec_ci_hi_usd    = _ec_ci_hi * _ec_risk
+    # Variance of a single trade's R outcome
+    _ec_var     = _ec_wr * (_ec_aw - _ec_exp)**2 + (1 - _ec_wr) * (-_ec_al - _ec_exp)**2
+    _ec_se      = (_ec_var / max(int(_ec_n), 1))**0.5 * int(_ec_n) # std dev of total R
+    _ec_ci_lo   = _ec_total - 1.96 * _ec_se
+    _ec_ci_hi   = _ec_total + 1.96 * _ec_se
+
+    # Profit Factor = gross wins / gross losses
+    _ec_pf_num  = _ec_wr * _ec_aw
+    _ec_pf_den  = (1 - _ec_wr) * _ec_al
+    _ec_pf      = _ec_pf_num / _ec_pf_den if _ec_pf_den > 0 else float("inf")
+
+    # Kelly Criterion: optimal fraction of capital to risk per trade
+    # Full Kelly = W/L - (1-W)/W_size  — we show Half Kelly (safer, industry standard)
+    _ec_kelly_full = (_ec_wr / _ec_al) - ((1 - _ec_wr) / _ec_aw) if _ec_aw > 0 else 0
+    _ec_kelly_full = max(0.0, _ec_kelly_full)
+    _ec_kelly_half = _ec_kelly_full / 2
+
+    # Ruin probability estimate (gambler's ruin, simplified)
+    # P(ruin) ≈ ((1-edge)/(1+edge))^N_units — approximation for continuous trading
+    _edge_ratio = (1 - _ec_exp) / (1 + _ec_exp) if _ec_exp > 0 else 1.0
+    _ec_ruin_prob = min(1.0, max(0.0, _edge_ratio ** max(int(_ec_n), 1)))
 
     # Edge classification
     if _ec_exp >= 0.5:
         _ec_edge_label = "Strong Edge"
         _ec_edge_color = "#00c853"
         _ec_edge_icon  = "✅"
-    elif _ec_exp >= 0.1:
-        _ec_edge_label = "Moderate Edge"
+    elif _ec_exp >= 0.2:
+        _ec_edge_label = "Good Edge"
         _ec_edge_color = "#64dd17"
         _ec_edge_icon  = "🟢"
-    elif _ec_exp > 0:
+    elif _ec_exp >= 0.05:
         _ec_edge_label = "Thin Edge"
         _ec_edge_color = "#ffd600"
         _ec_edge_icon  = "🟡"
+    elif _ec_exp > 0:
+        _ec_edge_label = "Marginal — verify with more trades"
+        _ec_edge_color = "#ff9800"
+        _ec_edge_icon  = "⚠️"
     elif _ec_exp == 0:
         _ec_edge_label = "Break-even"
         _ec_edge_color = "#ff6d00"
         _ec_edge_icon  = "⚠️"
     else:
-        _ec_edge_label = "Negative Edge — Do NOT trade"
+        _ec_edge_label = "Negative Edge — Do NOT trade this system"
         _ec_edge_color = "#ff1744"
         _ec_edge_icon  = "🔴"
 
     with ec_col2:
-        st.markdown("#### Results")
+        st.markdown("#### Core Results")
 
-        # Main expectancy card
         st.markdown(
             f"<div style='padding:16px 20px;border-radius:10px;border-left:5px solid {_ec_edge_color};"
-            f"background:{_ec_edge_color}18;margin-bottom:12px'>"
-            f"<div style='font-size:13px;color:#aaa;margin-bottom:4px'>Expectancy per Trade</div>"
-            f"<div style='font-size:36px;font-weight:700;color:{_ec_edge_color}'>{_ec_exp:+.3f}R</div>"
-            f"<div style='font-size:14px;margin-top:4px'>{_ec_edge_icon} {_ec_edge_label}</div>"
+            f"background:{_ec_edge_color}18;margin-bottom:14px'>"
+            f"<div style='font-size:12px;color:#aaa;letter-spacing:.08em;margin-bottom:2px'>EXPECTANCY PER TRADE</div>"
+            f"<div style='font-size:42px;font-weight:800;color:{_ec_edge_color};line-height:1'>{_ec_exp:+.3f}R</div>"
+            f"<div style='font-size:13px;color:#ccc;margin-top:6px'>"
+            f"= <b style='color:{_ec_edge_color}'>${_ec_exp * _ec_risk:+,.0f}</b> per trade at ${_ec_risk:,.0f} risk"
+            f"</div>"
+            f"<div style='font-size:13px;margin-top:4px'>{_ec_edge_icon} {_ec_edge_label}</div>"
             f"</div>",
             unsafe_allow_html=True
         )
 
-        # Metrics row
-        _ec_m1, _ec_m2, _ec_m3 = st.columns(3)
-        _ec_m1.metric("Reward / Risk Ratio", f"{_ec_rr:.2f}:1")
-        _ec_m2.metric("Break-even Win Rate", f"{_ec_bew*100:.1f}%",
+        _ec_r1, _ec_r2, _ec_r3 = st.columns(3)
+        _ec_r1.metric("Profit Factor",
+                      f"{_ec_pf:.2f}" if _ec_pf < 999 else "∞",
+                      help="Gross profit ÷ Gross loss. >1.5 = good, >2.0 = excellent")
+        _ec_r2.metric("R:R Ratio",     f"{_ec_rr:.2f}:1")
+        _ec_r3.metric("Break-even WR", f"{_ec_bew*100:.1f}%",
                       delta=f"{(_ec_wr - _ec_bew)*100:+.1f}% margin")
-        _ec_m3.metric("Trades Analysed", f"{int(_ec_n):,}")
+
+        st.markdown("#### Kelly Position Sizing")
+        _kc1, _kc2 = st.columns(2)
+        _kc1.metric("Half Kelly (recommended)", f"{_ec_kelly_half*100:.1f}% of capital",
+                    delta=f"${_ec_capital * _ec_kelly_half:,.0f} per trade",
+                    help="Half Kelly is the institutional standard — full Kelly causes severe drawdowns")
+        _kc2.metric("Full Kelly (theoretical max)", f"{_ec_kelly_full*100:.1f}%",
+                    help="Never use full Kelly in practice — too volatile")
+
+        if _ec_risk_pct > _ec_kelly_half * 100 * 1.5 and _ec_kelly_half > 0:
+            st.warning(f"You are risking **{_ec_risk_pct:.1f}%** per trade — "
+                       f"**{_ec_risk_pct / (_ec_kelly_half*100):.1f}× more** than Half Kelly recommends. "
+                       f"Reduce position size to avoid ruin.")
+        elif _ec_kelly_half > 0:
+            st.success(f"Your risk ({_ec_risk_pct:.1f}%) is within Kelly bounds.")
 
     st.divider()
 
-    # ── Projection block ─────────────────────────────────────────────────────
+    # ── Projection metrics ────────────────────────────────────────────────────
     st.markdown("#### Projection over All Trades")
+    _ep1, _ep2, _ep3, _ep4 = st.columns(4)
+    _ep1.metric("Expected Total R",       f"{_ec_total:+.1f}R",
+                delta=f"${_ec_total_usd:+,.0f}")
+    _ep2.metric("Std Dev of Outcome",     f"±{_ec_se:.1f}R",
+                delta=f"±${_ec_se * _ec_risk:,.0f}")
+    _ep3.metric("95% Confidence Interval",
+                f"{_ec_ci_lo:+.1f}R to {_ec_ci_hi:+.1f}R",
+                delta=f"${_ec_ci_lo * _ec_risk:+,.0f} to ${_ec_ci_hi * _ec_risk:+,.0f}")
+    _ruin_pct = _ec_ruin_prob * 100
+    _ep4.metric("Est. Ruin Probability",  f"{_ruin_pct:.1f}%",
+                delta="low" if _ruin_pct < 5 else ("high" if _ruin_pct > 20 else "moderate"),
+                help="Simplified gambler's ruin estimate — probability the system destroys the account")
 
-    _ec_pc1, _ec_pc2, _ec_pc3 = st.columns(3)
-    _ec_pc1.metric(
-        "Expected Total R",
-        f"{_ec_total:+.1f}R",
-        delta=f"${_ec_total_usd:+,.0f} at {_ec_risk:,.0f}/trade"
-    )
-    _ec_pc2.metric(
-        "Std Error of Estimate",
-        f"±{_ec_se:.1f}R",
-        delta=f"±${_ec_se_usd:,.0f}"
-    )
-    _ec_pc3.metric(
-        "95% Confidence Interval",
-        f"{_ec_ci_lo:+.1f}R — {_ec_ci_hi:+.1f}R",
-        delta=f"${_ec_ci_lo_usd:+,.0f} to ${_ec_ci_hi_usd:+,.0f}"
-    )
-
-    # ── Interpretation ───────────────────────────────────────────────────────
     st.divider()
-    st.markdown("#### How to Read This")
 
-    _sample_quality = "reliable" if _ec_n >= 30 else ("preliminary" if _ec_n >= 10 else "too small to trust")
-    _margin_note    = (
-        f"Your win rate is **{(_ec_wr - _ec_bew)*100:+.1f}%** "
-        f"{'above' if _ec_wr >= _ec_bew else 'below'} break-even, "
-        f"giving you a {'safety cushion' if _ec_wr >= _ec_bew else 'deficit'} of "
-        f"{'cushion' if _ec_wr >= _ec_bew else 'danger'} before your edge disappears."
+    # ── Monte Carlo equity curve simulation ──────────────────────────────────
+    st.markdown("#### Monte Carlo Equity Simulation")
+    st.caption(f"500 simulated equity paths over {int(_ec_n)} trades — each path randomly samples wins/losses per your stats.")
+
+    import random as _rnd
+    _mc_paths   = 500
+    _mc_n       = min(int(_ec_n), 500)
+    _mc_capital = float(_ec_capital)
+    _mc_risk_f  = _ec_risk_pct / 100
+    _mc_data    = {}
+    _rnd.seed(42)
+
+    for _pi in range(_mc_paths):
+        _cap = _mc_capital
+        _path = [_cap]
+        for _ in range(_mc_n):
+            _r1R = _cap * _mc_risk_f
+            if _rnd.random() < _ec_wr:
+                _cap += _r1R * _ec_aw
+            else:
+                _cap -= _r1R * _ec_al
+            _cap = max(_cap, 0)
+            _path.append(_cap)
+        _mc_data[_pi] = _path
+
+    import plotly.graph_objects as _goc
+    _mc_fig = _goc.Figure()
+    _mc_arr = np.array([_mc_data[i] for i in range(_mc_paths)])
+
+    # Fan bands: 10th, 25th, 50th, 75th, 90th percentile
+    _xs = list(range(_mc_n + 1))
+    _p10 = np.percentile(_mc_arr, 10, axis=0)
+    _p25 = np.percentile(_mc_arr, 25, axis=0)
+    _p50 = np.percentile(_mc_arr, 50, axis=0)
+    _p75 = np.percentile(_mc_arr, 75, axis=0)
+    _p90 = np.percentile(_mc_arr, 90, axis=0)
+
+    _mc_fig.add_trace(_goc.Scatter(x=_xs, y=_p90, name="90th pct", line=dict(width=0),
+                                   showlegend=False, mode="lines"))
+    _mc_fig.add_trace(_goc.Scatter(x=_xs, y=_p10, name="10–90% band",
+                                   fill="tonexty", fillcolor="rgba(0,200,83,0.08)",
+                                   line=dict(width=0), mode="lines"))
+    _mc_fig.add_trace(_goc.Scatter(x=_xs, y=_p75, name="75th pct", line=dict(width=0),
+                                   showlegend=False, mode="lines"))
+    _mc_fig.add_trace(_goc.Scatter(x=_xs, y=_p25, name="25–75% band",
+                                   fill="tonexty", fillcolor="rgba(0,200,83,0.15)",
+                                   line=dict(width=0), mode="lines"))
+    _mc_fig.add_trace(_goc.Scatter(x=_xs, y=_p50, name="Median path",
+                                   line=dict(color="#00c853", width=2.5), mode="lines"))
+    # A few individual paths for texture
+    for _pi in range(0, min(30, _mc_paths), 3):
+        _mc_fig.add_trace(_goc.Scatter(x=_xs, y=_mc_data[_pi],
+                                       line=dict(color="rgba(255,255,255,0.07)", width=1),
+                                       showlegend=False, mode="lines", hoverinfo="skip"))
+    # Starting capital reference
+    _mc_fig.add_hline(y=_mc_capital, line_dash="dash", line_color="#888", line_width=1)
+
+    _mc_final_vals = _mc_arr[:, -1]
+    _mc_ruin_count = int(np.sum(_mc_final_vals <= _mc_capital * 0.5))
+    _mc_double_count = int(np.sum(_mc_final_vals >= _mc_capital * 2))
+
+    _mc_fig.update_layout(
+        title=dict(text=f"Monte Carlo: {_mc_paths} paths, {_mc_n} trades | "
+                        f"Ruin (<50%): {_mc_ruin_count/10:.0f}% | "
+                        f"Doubled+: {_mc_double_count/10:.0f}%",
+                   font=dict(size=13)),
+        xaxis_title="Trade #", yaxis_title="Capital ($)",
+        plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+        font=dict(color="#ccc"), height=380,
+        legend=dict(orientation="h", y=-0.15),
+        margin=dict(l=40, r=20, t=50, b=40),
     )
+    _mc_fig.update_xaxes(gridcolor="#1e2a3a")
+    _mc_fig.update_yaxes(gridcolor="#1e2a3a", tickprefix="$", tickformat=",.0f")
+    st.plotly_chart(_mc_fig, use_container_width=True)
 
+    _mc_med_final = float(np.median(_mc_final_vals))
+    _mc_col1, _mc_col2, _mc_col3 = st.columns(3)
+    _mc_col1.metric("Median Final Capital",  f"${_mc_med_final:,.0f}",
+                    delta=f"{(_mc_med_final/_mc_capital - 1)*100:+.1f}%")
+    _mc_col2.metric("Paths Ending in 'Ruin' (<50% capital)", f"{_mc_ruin_count/5:.0f}%")
+    _mc_col3.metric("Paths That Doubled+",   f"{_mc_double_count/5:.0f}%")
+
+    st.divider()
+
+    # ── Interpretation + Glossary ─────────────────────────────────────────────
+    _sample_quality = "reliable" if _ec_n >= 30 else ("preliminary — collect more trades" if _ec_n >= 10 else "too small to trust")
     st.info(
-        f"**Expectancy of {_ec_exp:+.3f}R** means: for every $1 you risk, you expect to make "
-        f"**{'${:,.2f}'.format(_ec_exp * _ec_risk / _ec_risk) if _ec_exp >= 0 else '-${:,.2f}'.format(abs(_ec_exp))}** "
-        f"on average per trade. Over {int(_ec_n)} trades, the expected outcome is "
-        f"**{_ec_total:+.1f}R (${_ec_total_usd:+,.0f})**, "
-        f"but with a standard error of ±{_ec_se:.1f}R — so results can vary widely. "
-        f"Sample size ({int(_ec_n)} trades) is **{_sample_quality}**."
+        f"**Expectancy {_ec_exp:+.3f}R** — for every $1 risked you earn **${abs(_ec_exp):.2f}** "
+        f"({'profit' if _ec_exp >= 0 else 'loss'}) on average. "
+        f"Profit factor **{_ec_pf:.2f}** ({'excellent' if _ec_pf >= 2 else 'good' if _ec_pf >= 1.5 else 'acceptable' if _ec_pf >= 1 else 'losing'}). "
+        f"Half Kelly recommends risking **{_ec_kelly_half*100:.1f}%** per trade. "
+        f"Sample size: **{_sample_quality}**."
     )
 
-    with st.expander("📚 Glossary"):
+    with st.expander("📚 Complete Glossary"):
         st.markdown(
             """
 | Term | Definition |
 |------|-----------|
-| **R** | Your initial risk on a trade (e.g. entry price − stop-loss). All wins/losses expressed as multiples of R. |
-| **Expectancy** | Average R earned per trade. Must be **positive** for a system to be profitable long-term. |
-| **Break-even win rate** | The minimum win % at which expectancy = 0, given your R:R ratio. |
-| **Standard Error** | How much total-R outcomes vary around the mean across N trades. Widens with fewer trades. |
-| **95% CI** | The range in which your true total-R result will fall 95% of the time if you run N trades. |
-| **Reward/Risk Ratio** | Avg win ÷ Avg loss. A ratio of 2:1 means you only need a 33% win rate to break even. |
+| **R** | Your initial risk on a trade (entry − stop). All P&L expressed as multiples of R. |
+| **Expectancy** | Average R earned per trade. Must be positive for a system to be profitable long-term. |
+| **Profit Factor** | Gross wins ÷ Gross losses. >1.0 = profitable. >2.0 = excellent. |
+| **Break-even Win Rate** | Minimum win % for expectancy = 0, given your R:R ratio. |
+| **Full Kelly** | Theoretically optimal position size to maximise long-run geometric growth. Extremely volatile. |
+| **Half Kelly** | Full Kelly ÷ 2. Industry standard — nearly as profitable, far less volatile, much safer. |
+| **Std Dev (Outcome)** | How much the actual total-R outcome varies around the mean across N trades. |
+| **95% CI** | Range in which actual total-R will fall 95% of the time over N trades. |
+| **Monte Carlo Simulation** | Randomly samples wins/losses 500 times to show the distribution of possible equity paths. |
+| **Ruin Probability** | % of simulated paths where the account falls to ≤50% of starting capital. |
 """
         )
 
     st.markdown(
-        "<div style='margin-top:20px;padding:12px;border-radius:8px;background:#1a1a2e;color:#888;font-size:12px'>"
-        "⚡ Tip: Run at least 30 trades before trusting these numbers. "
-        "Fewer than 30 trades have high variance — your edge estimate can be wildly off. "
-        "Aim for 50–100 trades for a statistically meaningful sample."
+        "<div style='margin-top:16px;padding:12px;border-radius:8px;background:#1a1a2e;"
+        "color:#888;font-size:12px'>"
+        "⚡ <b>Blackrock/Renaissance rule of thumb:</b> a Profit Factor below 1.3 means the system "
+        "likely doesn't survive transaction costs and slippage in live trading. "
+        "Half Kelly prevents the drawdowns that kill accounts even with a positive edge. "
+        "Aim for 50–100 trades before trusting expectancy numbers."
         "</div>",
         unsafe_allow_html=True
     )
