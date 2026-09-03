@@ -4894,7 +4894,7 @@ def _compute_market_risk_score() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 st.title("🔮 Stock Predictor Model")
 
-main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7 = st.tabs([
+main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8 = st.tabs([
     "📈 Analysis & Prediction",
     "🔍 Find Stocks",
     "💼 My Portfolio",
@@ -4902,6 +4902,7 @@ main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7 = st
     "🚨 Market Risk Monitor",
     "📓 Prediction Tracker",
     "🗂️ My Stocks Hub",
+    "🎲 Expectancy Calculator",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -11187,51 +11188,83 @@ with main_tab2:  # ← replacement block starts here
 
 
     def _compute_live_signals(df) -> dict:
-        """Compute RSI, MACD, BB from a price DataFrame and return exit signal."""
+        """Compute RSI, MACD, BB from a price DataFrame and return signal.
+
+        Signal thresholds are intentionally conservative so a stock in a
+        healthy uptrend is never incorrectly flagged as EXIT_NOW.
+
+        EXIT_NOW  : RSI > 83 (extreme overbought) OR (RSI > 75 AND MACD
+                    histogram turning negative AND BB > 95%)
+                    — requires multiple confirming bearish signals, not just RSI.
+        WATCH     : Two or more weakening signals present.
+        HOLD      : Default when trend is intact. Volume spikes on an up-move
+                    are bullish — never treated as exit signals.
+        HOLD_BUY_DIP: RSI deeply oversold (<35) — pullback into support.
+        """
         if df is None or len(df) < 20:
             return {"signal": "INSUFFICIENT_DATA", "rsi": None, "macd": None}
         try:
             close = df["Close"].dropna()
-            # RSI
+            # RSI-14
             delta = close.diff()
             gain  = delta.clip(lower=0).rolling(14).mean()
             loss  = (-delta.clip(upper=0)).rolling(14).mean()
             rs    = gain / loss.replace(0, 1e-9)
-            rsi   = float((100 - 100 / (1 + rs)).iloc[-1])
-            # MACD
-            ema12 = close.ewm(span=12).mean()
-            ema26 = close.ewm(span=26).mean()
-            macd_line  = ema12 - ema26
-            signal_line = macd_line.ewm(span=9).mean()
-            macd_val   = float(macd_line.iloc[-1])
-            sig_val    = float(signal_line.iloc[-1])
-            macd_hist  = macd_val - sig_val
-            # Bollinger
-            ma20   = close.rolling(20).mean()
-            std20  = close.rolling(20).std()
-            bb_hi  = float((ma20 + 2 * std20).iloc[-1])
-            bb_lo  = float((ma20 - 2 * std20).iloc[-1])
-            price  = float(close.iloc[-1])
-            bb_pct = (price - bb_lo) / (bb_hi - bb_lo) * 100 if bb_hi != bb_lo else 50
-            # Volume spike
-            vol    = df["Volume"].dropna()
-            vol_z  = (float(vol.iloc[-1]) - float(vol.mean())) / (float(vol.std()) + 1e-9) if len(vol) > 5 else 0
-            # Determine signal
-            exit_reasons = []
-            if rsi > 75:   exit_reasons.append(f"RSI overbought ({rsi:.0f})")
-            if rsi < 30:   exit_reasons.append(f"RSI oversold ({rsi:.0f}) — possible reversal")
-            if macd_hist < 0 and macd_val < sig_val: exit_reasons.append("MACD bearish crossover")
-            if bb_pct > 90: exit_reasons.append(f"Price at upper Bollinger Band ({bb_pct:.0f}%)")
-            if vol_z > 2.5: exit_reasons.append(f"Volume spike {vol_z:.1f}σ — watch for reversal")
+            rsi      = float((100 - 100 / (1 + rs)).iloc[-1])
+            rsi_prev = float((100 - 100 / (1 + rs)).iloc[-2]) if len(rs) >= 2 else rsi
 
-            if rsi > 78 or (rsi > 70 and macd_hist < 0):
+            # MACD
+            ema12 = close.ewm(span=12, adjust=False).mean()
+            ema26 = close.ewm(span=26, adjust=False).mean()
+            macd_line   = ema12 - ema26
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            macd_val    = float(macd_line.iloc[-1])
+            sig_val     = float(signal_line.iloc[-1])
+            macd_hist   = macd_val - sig_val
+            macd_hist_prev = float((macd_line - signal_line).iloc[-2]) if len(macd_line) >= 2 else macd_hist
+            macd_turning_down = macd_hist < macd_hist_prev and macd_hist_prev > 0  # was positive, now shrinking
+
+            # Bollinger Bands
+            ma20  = close.rolling(20).mean()
+            std20 = close.rolling(20).std()
+            bb_hi = float((ma20 + 2 * std20).iloc[-1])
+            bb_lo = float((ma20 - 2 * std20).iloc[-1])
+            price = float(close.iloc[-1])
+            bb_pct = (price - bb_lo) / (bb_hi - bb_lo) * 100 if bb_hi != bb_lo else 50
+
+            # Volume (informational only — volume surge on up-move is BULLISH, not an exit signal)
+            vol   = df["Volume"].dropna()
+            vol_z = (float(vol.iloc[-1]) - float(vol.mean())) / (float(vol.std()) + 1e-9) if len(vol) > 5 else 0
+            price_up = float(close.iloc[-1]) >= float(close.iloc[-2])
+
+            # ── Weakening signals (must be genuinely bearish) ────────────
+            exit_reasons = []
+            if rsi > 80:
+                exit_reasons.append(f"RSI extreme ({rsi:.0f})")
+            elif rsi > 75 and rsi < rsi_prev:  # RSI rolling over from high
+                exit_reasons.append(f"RSI rolling over ({rsi:.0f}↓)")
+            if macd_turning_down and macd_hist < 0:
+                exit_reasons.append("MACD crossed below signal")
+            elif macd_turning_down:
+                exit_reasons.append("MACD momentum fading")
+            if bb_pct > 95:
+                exit_reasons.append(f"Price at BB upper extreme ({bb_pct:.0f}%)")
+            # Volume surge on DOWN move = distribution (bearish) — but up-move is fine
+            if vol_z > 2.5 and not price_up:
+                exit_reasons.append(f"High-volume sell-off ({vol_z:.1f}σ)")
+
+            # ── Signal logic ─────────────────────────────────────────────
+            # EXIT_NOW: extreme overbought OR multiple confirming bearish signals
+            if rsi > 83:
                 signal = "EXIT_NOW"
+            elif rsi > 75 and macd_hist < 0 and bb_pct > 90:
+                signal = "EXIT_NOW"  # RSI+MACD+BB all confirming
             elif len(exit_reasons) >= 2:
                 signal = "WATCH"
-            elif rsi < 35 or (macd_hist > 0 and rsi < 55):
-                signal = "HOLD_BUY_DIP"
+            elif rsi < 35:
+                signal = "HOLD_BUY_DIP"  # deeply oversold — pullback entry
             else:
-                signal = "HOLD"
+                signal = "HOLD"  # default: trend intact, stay in
 
             return {
                 "signal": signal, "rsi": rsi, "macd": macd_val,
@@ -12845,11 +12878,18 @@ with main_tab4:
             )
 
             if _lm_df is not None and not _lm_df.empty:
-                _sig  = _compute_live_signals(_lm_df)
-                _hfr  = _hedge_fund_rules(_lm_df, _fh_quote)  # rule-based engine
-                _res, _sup = _compute_sr_levels(_lm_df)
-                _pats = _detect_candle_patterns(_lm_df)
-                _tgt  = _compute_targets(_lm_df, _res, _sup)
+                # ── Fetch daily candles for stable S/R, ATR, trend signals ──────
+                # Intraday candles add a new bar every minute → S/R levels, ATR,
+                # and targets shift with each refresh causing confusing changes.
+                # Daily candles are stable all day: only one new bar per session.
+                _lm_daily = _fetch_live_candles(_lm_sym, "1d", "6mo")
+                _stable_df = _lm_daily if (_lm_daily is not None and len(_lm_daily) >= 30) else _lm_df
+
+                _sig  = _compute_live_signals(_lm_df)      # intraday: RSI/MACD on 5m for timing
+                _hfr  = _hedge_fund_rules(_stable_df, _fh_quote)  # daily: trend/momentum/volume
+                _res, _sup = _compute_sr_levels(_stable_df)       # daily: stable S/R levels
+                _pats = _detect_candle_patterns(_lm_df)            # intraday: candle patterns
+                _tgt  = _compute_targets(_stable_df, _res, _sup)   # daily: stable ATR targets
 
                 # Current price: during extended hours use yfinance prepost last bar
                 # (Finnhub free /quote only returns regular session close, not pre/post price)
@@ -13090,8 +13130,8 @@ with main_tab4:
                     rsi  = s.get("rsi") or 50
                     mh   = s.get("macd_hist") or 0
                     bbp  = s.get("bb_pct") or 50
-                    buy_score  = (1 if rsi < 55 else 0) + (1 if mh > 0 else 0) + (1 if bbp < 70 else 0)
-                    sell_score = (1 if rsi > 65 else 0) + (1 if mh < 0 else 0) + (1 if bbp > 75 else 0)
+                    buy_score  = (1 if 45 < rsi < 70 else 0) + (1 if mh > 0 else 0) + (1 if bbp < 65 else 0)
+                    sell_score = (1 if rsi > 75 else 0)      + (1 if mh < 0 else 0) + (1 if bbp > 85 else 0)
                     if sig == "EXIT_NOW":
                         direction = "SELL"
                     elif sig == "HOLD_BUY_DIP":
@@ -15911,3 +15951,176 @@ with main_tab7:
                 if st.button("🗑 Clear Backtest Results", key="bt_clear"):
                     st.session_state.pop("bt_records", None)
                     st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 8 — EXPECTANCY CALCULATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+with main_tab8:
+    st.markdown("## 🎲 Expectancy Calculator")
+    st.markdown(
+        "Quantify the statistical edge of any trading strategy before you risk real money. "
+        "Enter your historical trade stats and see whether your system has positive expectancy."
+    )
+
+    # ── Utility functions ────────────────────────────────────────────────────
+    def _ec_expectancy(win_rate: float, avg_win_r: float, avg_loss_r: float) -> float:
+        """Expected R per trade."""
+        return win_rate * avg_win_r - (1 - win_rate) * avg_loss_r
+
+    def _ec_std_error(win_rate: float, avg_win_r: float, avg_loss_r: float, n: int) -> float:
+        """Standard error of total-R estimate over n trades."""
+        if n <= 0:
+            return 0.0
+        e  = _ec_expectancy(win_rate, avg_win_r, avg_loss_r)
+        # variance of a single trade's R outcome
+        var = win_rate * (avg_win_r - e) ** 2 + (1 - win_rate) * (-avg_loss_r - e) ** 2
+        return (var / n) ** 0.5 * n  # std-dev of total R over n trades
+
+    def _ec_breakeven_wr(avg_win_r: float, avg_loss_r: float) -> float:
+        """Win rate needed for zero expectancy."""
+        if avg_win_r + avg_loss_r == 0:
+            return 0.0
+        return avg_loss_r / (avg_win_r + avg_loss_r)
+
+    # ── Inputs ───────────────────────────────────────────────────────────────
+    ec_col1, ec_col2 = st.columns([1, 1], gap="large")
+
+    with ec_col1:
+        st.markdown("#### Inputs")
+        _ec_wr   = st.slider("Win Rate (%)", min_value=1, max_value=99, value=50, step=1,
+                             help="% of trades that close in profit") / 100
+        _ec_aw   = st.number_input("Avg Win (R multiples)", min_value=0.1, max_value=50.0,
+                                   value=2.0, step=0.1,
+                                   help="Average profit expressed as a multiple of your initial risk (R)")
+        _ec_al   = st.number_input("Avg Loss (R multiples)", min_value=0.1, max_value=50.0,
+                                   value=1.0, step=0.1,
+                                   help="Average loss as a multiple of R (enter positive number)")
+        _ec_n    = st.number_input("Number of Trades", min_value=1, max_value=10000,
+                                   value=50, step=1,
+                                   help="Total number of trades in the sample (or planned)")
+        _ec_risk = st.number_input("Risk per Trade ($)", min_value=100, max_value=1_000_000,
+                                   value=10_000, step=500,
+                                   help="Dollar amount risked on each trade (1R in $)")
+
+    # ── Calculations ─────────────────────────────────────────────────────────
+    _ec_exp   = _ec_expectancy(_ec_wr, _ec_aw, _ec_al)
+    _ec_total = _ec_exp * _ec_n
+    _ec_se    = _ec_std_error(_ec_wr, _ec_aw, _ec_al, _ec_n)
+    _ec_bew   = _ec_breakeven_wr(_ec_aw, _ec_al)
+    _ec_rr    = _ec_aw / _ec_al if _ec_al > 0 else 0
+
+    _ec_total_usd    = _ec_total * _ec_risk
+    _ec_se_usd       = _ec_se    * _ec_risk
+    _ec_ci_lo        = _ec_total - 1.96 * _ec_se
+    _ec_ci_hi        = _ec_total + 1.96 * _ec_se
+    _ec_ci_lo_usd    = _ec_ci_lo * _ec_risk
+    _ec_ci_hi_usd    = _ec_ci_hi * _ec_risk
+
+    # Edge classification
+    if _ec_exp >= 0.5:
+        _ec_edge_label = "Strong Edge"
+        _ec_edge_color = "#00c853"
+        _ec_edge_icon  = "✅"
+    elif _ec_exp >= 0.1:
+        _ec_edge_label = "Moderate Edge"
+        _ec_edge_color = "#64dd17"
+        _ec_edge_icon  = "🟢"
+    elif _ec_exp > 0:
+        _ec_edge_label = "Thin Edge"
+        _ec_edge_color = "#ffd600"
+        _ec_edge_icon  = "🟡"
+    elif _ec_exp == 0:
+        _ec_edge_label = "Break-even"
+        _ec_edge_color = "#ff6d00"
+        _ec_edge_icon  = "⚠️"
+    else:
+        _ec_edge_label = "Negative Edge — Do NOT trade"
+        _ec_edge_color = "#ff1744"
+        _ec_edge_icon  = "🔴"
+
+    with ec_col2:
+        st.markdown("#### Results")
+
+        # Main expectancy card
+        st.markdown(
+            f"<div style='padding:16px 20px;border-radius:10px;border-left:5px solid {_ec_edge_color};"
+            f"background:{_ec_edge_color}18;margin-bottom:12px'>"
+            f"<div style='font-size:13px;color:#aaa;margin-bottom:4px'>Expectancy per Trade</div>"
+            f"<div style='font-size:36px;font-weight:700;color:{_ec_edge_color}'>{_ec_exp:+.3f}R</div>"
+            f"<div style='font-size:14px;margin-top:4px'>{_ec_edge_icon} {_ec_edge_label}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+        # Metrics row
+        _ec_m1, _ec_m2, _ec_m3 = st.columns(3)
+        _ec_m1.metric("Reward / Risk Ratio", f"{_ec_rr:.2f}:1")
+        _ec_m2.metric("Break-even Win Rate", f"{_ec_bew*100:.1f}%",
+                      delta=f"{(_ec_wr - _ec_bew)*100:+.1f}% margin")
+        _ec_m3.metric("Trades Analysed", f"{int(_ec_n):,}")
+
+    st.divider()
+
+    # ── Projection block ─────────────────────────────────────────────────────
+    st.markdown("#### Projection over All Trades")
+
+    _ec_pc1, _ec_pc2, _ec_pc3 = st.columns(3)
+    _ec_pc1.metric(
+        "Expected Total R",
+        f"{_ec_total:+.1f}R",
+        delta=f"${_ec_total_usd:+,.0f} at {_ec_risk:,.0f}/trade"
+    )
+    _ec_pc2.metric(
+        "Std Error of Estimate",
+        f"±{_ec_se:.1f}R",
+        delta=f"±${_ec_se_usd:,.0f}"
+    )
+    _ec_pc3.metric(
+        "95% Confidence Interval",
+        f"{_ec_ci_lo:+.1f}R — {_ec_ci_hi:+.1f}R",
+        delta=f"${_ec_ci_lo_usd:+,.0f} to ${_ec_ci_hi_usd:+,.0f}"
+    )
+
+    # ── Interpretation ───────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### How to Read This")
+
+    _sample_quality = "reliable" if _ec_n >= 30 else ("preliminary" if _ec_n >= 10 else "too small to trust")
+    _margin_note    = (
+        f"Your win rate is **{(_ec_wr - _ec_bew)*100:+.1f}%** "
+        f"{'above' if _ec_wr >= _ec_bew else 'below'} break-even, "
+        f"giving you a {'safety cushion' if _ec_wr >= _ec_bew else 'deficit'} of "
+        f"{'cushion' if _ec_wr >= _ec_bew else 'danger'} before your edge disappears."
+    )
+
+    st.info(
+        f"**Expectancy of {_ec_exp:+.3f}R** means: for every $1 you risk, you expect to make "
+        f"**{'${:,.2f}'.format(_ec_exp * _ec_risk / _ec_risk) if _ec_exp >= 0 else '-${:,.2f}'.format(abs(_ec_exp))}** "
+        f"on average per trade. Over {int(_ec_n)} trades, the expected outcome is "
+        f"**{_ec_total:+.1f}R (${_ec_total_usd:+,.0f})**, "
+        f"but with a standard error of ±{_ec_se:.1f}R — so results can vary widely. "
+        f"Sample size ({int(_ec_n)} trades) is **{_sample_quality}**."
+    )
+
+    with st.expander("📚 Glossary"):
+        st.markdown(
+            """
+| Term | Definition |
+|------|-----------|
+| **R** | Your initial risk on a trade (e.g. entry price − stop-loss). All wins/losses expressed as multiples of R. |
+| **Expectancy** | Average R earned per trade. Must be **positive** for a system to be profitable long-term. |
+| **Break-even win rate** | The minimum win % at which expectancy = 0, given your R:R ratio. |
+| **Standard Error** | How much total-R outcomes vary around the mean across N trades. Widens with fewer trades. |
+| **95% CI** | The range in which your true total-R result will fall 95% of the time if you run N trades. |
+| **Reward/Risk Ratio** | Avg win ÷ Avg loss. A ratio of 2:1 means you only need a 33% win rate to break even. |
+"""
+        )
+
+    st.markdown(
+        "<div style='margin-top:20px;padding:12px;border-radius:8px;background:#1a1a2e;color:#888;font-size:12px'>"
+        "⚡ Tip: Run at least 30 trades before trusting these numbers. "
+        "Fewer than 30 trades have high variance — your edge estimate can be wildly off. "
+        "Aim for 50–100 trades for a statistically meaningful sample."
+        "</div>",
+        unsafe_allow_html=True
+    )
