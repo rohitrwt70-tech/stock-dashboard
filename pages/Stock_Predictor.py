@@ -1662,6 +1662,23 @@ def fetch_stock_features(sym):
     except Exception:
         pass
 
+    # Chaikin Money Flow (21-day) — measures buying/selling pressure by volume
+    cmf = 0.0
+    try:
+        _clv = ((close - low) - (high - close)) / (high - low + 1e-9)
+        cmf  = _safe_float((_clv * vol).rolling(21).sum().iloc[-1] /
+                            (vol.rolling(21).sum().iloc[-1] + 1e-9), 0.0)
+    except Exception:
+        pass
+
+    # Rate of Change (12-bar) — raw price momentum, no smoothing
+    roc_12 = 0.0
+    try:
+        if len(close) > 12:
+            roc_12 = _safe_float((close.iloc[-1] / close.iloc[-12] - 1), 0.0)
+    except Exception:
+        pass
+
     ma50 = price; ma200 = price
     try:
         ma50  = _safe_float(close.rolling(50).mean().iloc[-1],  price)
@@ -1711,6 +1728,7 @@ def fetch_stock_features(sym):
         "rsi": rsi,           "macd_hist": macd_hist,
         "bb_pct": bb_pct,     "atr_pct": atr_pct,
         "vol_surge": vol_surge, "obv_slope": obv_slope,
+        "cmf": cmf, "roc_12": roc_12,
         "above_ma50":   1 if price > ma50  else 0,
         "above_ma200":  1 if price > ma200 else 0,
         "golden_cross": 1 if ma50  > ma200 else 0,
@@ -1981,7 +1999,9 @@ def score_stock(f, ranked, bucket_key, risk_pref="Moderate", inv_horizon="1 Year
         tech += [rv("mom_3m") * 0.8, rv("mom_6m") * 1.2, rv("mom_1y") * 1.5]
 
     tech += [rv("above_ma50"), rv("above_ma200"), rv("golden_cross"),
-             rv("vol_surge"), rv("obv_slope"), rv("sharpe") * 1.5]
+             rv("vol_surge"), rv("obv_slope"), rv("sharpe") * 1.5,
+             rv("cmf"),   # Chaikin Money Flow: buying pressure confirmation
+             rv("roc_12")]  # Rate of Change: raw price momentum
 
     rsi_val = float(f.get("rsi") or 50)
     if   rsi_val < 30: rsi_score = 0.85
@@ -2087,27 +2107,42 @@ def score_stock(f, ranked, bucket_key, risk_pref="Moderate", inv_horizon="1 Year
 def classify_bucket(f, ranked):
     """
     Return which bucket (anchor/growth/rotational) best fits the stock.
-    Thresholds deliberately inclusive so all three buckets are well populated.
-    """
-    beta   = float(f.get("beta",      1.0) or 1.0)
-    mom_3m = float(f.get("mom_3m",    0.0) or 0.0)
-    mom_1m = float(f.get("mom_1m",    0.0) or 0.0)
-    sharpe = float(f.get("sharpe",    0.0) or 0.0)
-    max_dd = float(f.get("max_dd",   -0.3) or -0.3)
-    vol    = float(f.get("vol_surge", 1.0) or 1.0)
-    rsi    = float(f.get("rsi",        50) or 50)
-    above_ma200 = int(f.get("above_ma200", 0) or 0)
 
-    # Anchor: low-beta, low drawdown, consistent trend, decent Sharpe
-    if beta < 1.1 and abs(max_dd) < 0.30 and sharpe > 0.3 and above_ma200:
+    Anchor:     Low-beta, low drawdown, profitable, Sharpe > 0.3 — core holdings.
+    Growth:     Revenue/earnings expanding, above MA200, moderate risk.
+    Rotational: High recent momentum, elevated volume, trending — shorter hold.
+    """
+    beta        = float(f.get("beta",       1.0)  or 1.0)
+    mom_3m      = float(f.get("mom_3m",     0.0)  or 0.0)
+    mom_1m      = float(f.get("mom_1m",     0.0)  or 0.0)
+    sharpe      = float(f.get("sharpe",     0.0)  or 0.0)
+    max_dd      = float(f.get("max_dd",    -0.3)  or -0.3)
+    vol         = float(f.get("vol_surge",  1.0)  or 1.0)
+    rsi         = float(f.get("rsi",         50)  or 50)
+    above_ma200 = int(f.get("above_ma200",    0)  or 0)
+    rev_growth  = float(f.get("rev_growth",  0.0) or 0.0)
+    earn_growth = float(f.get("earn_growth", 0.0) or 0.0)
+    net_margin  = float(f.get("net_margin",  0.0) or 0.0)
+    de_ratio    = float(f.get("de_ratio",    0.0) or 0.0)
+
+    # Anchor: capital preservation profile — low beta, low drawdown, profitable,
+    # consistent trend (above MA200), manageable leverage
+    if (beta < 1.15 and abs(max_dd) < 0.30 and sharpe > 0.25 and
+            above_ma200 and net_margin > 0 and de_ratio < 200):
         return "anchor"
 
-    # Rotational: any meaningful positive momentum + elevated beta or volume
-    # Lowered thresholds so 7-8 stocks can qualify
-    if (mom_3m > 0.05 or mom_1m > 0.08) and (vol > 1.2 or beta > 1.1) and rsi > 45:
+    # Rotational: short-term momentum play — price and volume confirmation,
+    # RSI in healthy zone, clear trend in last 1–3 months
+    if ((mom_3m > 0.05 or mom_1m > 0.08) and
+            (vol > 1.2 or beta > 1.1) and rsi > 45 and mom_3m > -0.05):
         return "rotational"
 
-    return "growth"
+    # Growth: future-oriented — either revenue/earnings expanding strongly
+    # or quality business above MA200 (even if momentum is moderate)
+    if rev_growth > 0.10 or earn_growth > 0.10 or above_ma200:
+        return "growth"
+
+    return "growth"  # default
 
 
 def assign_percentile(score, all_scores):
@@ -11508,40 +11543,69 @@ with main_tab2:  # ← replacement block starts here
 
 
     def _compute_sr_levels(df, n=3):
-        """Pivot-based support/resistance. Returns (resistances, supports) near current price."""
+        """
+        Volume-weighted pivot support/resistance.
+        Pivots touched by high volume are stronger — weighted by avg volume at each level.
+        Also snaps to round-number psychological levels (every 5/10/50/100 depending on price).
+        Returns (resistances, supports) sorted by proximity to current price.
+        """
         if df is None or len(df) < 25:
             return [], []
         high, low, close = df["High"], df["Low"], df["Close"]
+        volume = df["Volume"] if "Volume" in df.columns else pd.Series(np.ones(len(df)), index=df.index)
+        vol_avg = float(volume.rolling(20).mean().iloc[-1]) or 1.0
         w = 5
         res_raw, sup_raw = [], []
         for i in range(w, len(df) - w):
+            _vol_wt = float(volume.iloc[i]) / vol_avg  # volume weight (>1 = above-avg volume)
             if float(high.iloc[i]) == float(high.iloc[i-w:i+w+1].max()):
-                res_raw.append(float(high.iloc[i]))
+                res_raw.append((float(high.iloc[i]), _vol_wt))
             if float(low.iloc[i]) == float(low.iloc[i-w:i+w+1].min()):
-                sup_raw.append(float(low.iloc[i]))
+                sup_raw.append((float(low.iloc[i]), _vol_wt))
 
-        def _cluster(levels, pct=0.006):
-            if not levels: return []
-            lvs = sorted(levels)
+        def _cluster(levels_wt, pct=0.006):
+            if not levels_wt: return []
+            lvs = sorted(levels_wt, key=lambda x: x[0])
             groups, grp = [], [lvs[0]]
             for lv in lvs[1:]:
-                if (lv - grp[-1]) / (grp[-1] + 1e-9) < pct:
+                if (lv[0] - grp[-1][0]) / (grp[-1][0] + 1e-9) < pct:
                     grp.append(lv)
                 else:
-                    groups.append(sum(grp) / len(grp)); grp = [lv]
-            groups.append(sum(grp) / len(grp))
-            return groups
+                    _wt_sum = sum(g[1] for g in grp)
+                    _wt_avg = sum(g[0]*g[1] for g in grp) / max(_wt_sum, 1e-9)
+                    groups.append((_wt_avg, _wt_sum)); grp = [lv]
+            _wt_sum = sum(g[1] for g in grp)
+            _wt_avg = sum(g[0]*g[1] for g in grp) / max(_wt_sum, 1e-9)
+            groups.append((_wt_avg, _wt_sum))
+            # Sort by volume weight (strongest levels first)
+            return sorted(groups, key=lambda x: -x[1])
 
         cur = float(close.iloc[-1])
-        res_cl = sorted([r for r in _cluster(res_raw) if r > cur * 1.001])
-        sup_cl = sorted([s for s in _cluster(sup_raw) if s < cur * 0.999], reverse=True)
+
+        # Add psychological round-number levels near current price
+        _round_step = (100 if cur > 500 else 50 if cur > 200 else 10 if cur > 50 else 5 if cur > 10 else 1)
+        _round_near = [round(cur / _round_step) * _round_step + _round_step * k
+                       for k in range(-5, 6) if k != 0]
+        _round_res  = [(r, 0.5) for r in _round_near if r > cur * 1.001][:3]
+        _round_sup  = [(s, 0.5) for s in _round_near if s < cur * 0.999][:3]
+
+        res_cl_wt = _cluster(res_raw + _round_res)
+        sup_cl_wt = _cluster(sup_raw + _round_sup)
+
+        res_cl = sorted([r[0] for r in res_cl_wt if r[0] > cur * 1.001])
+        sup_cl = sorted([s[0] for s in sup_cl_wt if s[0] < cur * 0.999], reverse=True)
         return res_cl[:n], sup_cl[:n]
 
 
     def _detect_candle_patterns(df):
-        """Detect the last 1-3 candle pattern. Returns list of (name, emoji, description)."""
+        """
+        Detect the last 1-3 candle pattern.
+        Returns list of (name, emoji, description, reliability) sorted by reliability.
+        Covers all major institutional-grade patterns used by quant systems.
+        """
         if df is None or len(df) < 3:
             return []
+
         def _row(i):
             o = float(df["Open"].iloc[i]); h = float(df["High"].iloc[i])
             l = float(df["Low"].iloc[i]);  c = float(df["Close"].iloc[i])
@@ -11551,58 +11615,144 @@ with main_tab2:  # ← replacement block starts here
 
         o1,h1,l1,c1,b1,r1,uw1,lw1,bull1 = _row(-1)
         o2,h2,l2,c2,b2,r2,uw2,lw2,bull2 = _row(-2)
+        try:
+            o3,h3,l3,c3,b3,r3,uw3,lw3,bull3 = _row(-3)
+        except Exception:
+            o3=h3=l3=c3=b3=r3=uw3=lw3=o1; bull3=True
 
-        patterns = []
-        if b1 < 0.08 * r1:
-            patterns.append(("Doji", "⚪", "Indecision — possible reversal ahead"))
-        elif bull1 and lw1 > 2*b1 and uw1 < 0.5*b1 and not bull2:
-            patterns.append(("Hammer", "🔨", "Bullish reversal — buyers rejected lower prices"))
-        elif not bull1 and uw1 > 2*b1 and lw1 < 0.5*b1:
-            patterns.append(("Shooting Star", "⭐", "Bearish reversal — sellers rejected higher prices"))
-        elif bull1 and not bull2 and c1 > o2 and o1 < c2 and b1 > b2:
-            patterns.append(("Bullish Engulfing", "🟢", "Strong buy signal — bulls in control"))
-        elif not bull1 and bull2 and c1 < o2 and o1 > c2 and b1 > b2:
-            patterns.append(("Bearish Engulfing", "🔴", "Strong sell signal — bears in control"))
-        elif bull1 and b1 > 0.85 * r1:
-            patterns.append(("Bullish Marubozu", "💚", "Strong momentum — trend continuation likely"))
-        elif not bull1 and b1 > 0.85 * r1:
-            patterns.append(("Bearish Marubozu", "🩸", "Heavy selling — watch for continuation"))
-        elif bull1 and uw1 > 1.5*b1 and lw1 < 0.3*b1:
-            patterns.append(("Spinning Top (bullish)", "🔵", "Mild bullish momentum, confirmation needed"))
-        elif not bull1 and lw1 > 1.5*b1:
-            patterns.append(("Inverted Hammer", "🟡", "Potential reversal — needs next-candle confirmation"))
+        patterns = []  # (name, emoji, description, reliability 1-5)
+
+        # ── 3-candle patterns (most reliable) ────────────────────────────────
+        # Morning Star: bearish candle, small body, bullish candle closing above midpoint of first
+        if (not bull3 and b2 < 0.4*b3 and bull1 and c1 > (o3 + c3) / 2):
+            patterns.append(("Morning Star", "🌅", "Bullish reversal — 3-candle bottom, high reliability", 5))
+        # Evening Star: bullish candle, small body, bearish candle closing below midpoint of first
+        elif (bull3 and b2 < 0.4*b3 and not bull1 and c1 < (o3 + c3) / 2):
+            patterns.append(("Evening Star", "🌆", "Bearish reversal — 3-candle top, high reliability", 5))
+        # Three White Soldiers: three consecutive bullish candles, each opening in prior body
+        elif (bull1 and bull2 and bull3 and c1 > c2 > c3 and
+              o1 > o2 and o1 < c2 and o2 > o3 and o2 < c3 and
+              b1 > 0.6*r1 and b2 > 0.6*r2 and b3 > 0.6*r3):
+            patterns.append(("Three White Soldiers", "💪", "Strong bullish continuation — institutional accumulation", 5))
+        # Three Black Crows
+        elif (not bull1 and not bull2 and not bull3 and c1 < c2 < c3 and
+              o1 < o2 and o1 > c2 and o2 < o3 and o2 > c3 and
+              b1 > 0.6*r1 and b2 > 0.6*r2):
+            patterns.append(("Three Black Crows", "🦅", "Strong bearish continuation — institutional distribution", 5))
+
+        # ── 2-candle patterns ─────────────────────────────────────────────────
+        if not patterns:
+            if bull1 and not bull2 and c1 > o2 and o1 < c2 and b1 > b2:
+                patterns.append(("Bullish Engulfing", "🟢", "Strong buy signal — bulls fully engulfed prior bear candle", 4))
+            elif not bull1 and bull2 and c1 < o2 and o1 > c2 and b1 > b2:
+                patterns.append(("Bearish Engulfing", "🔴", "Strong sell signal — bears fully engulfed prior bull candle", 4))
+            # Bullish Harami (small bullish inside prior bear)
+            elif bull1 and not bull2 and c1 < o2 and o1 > c2 and b1 < 0.5*b2:
+                patterns.append(("Bullish Harami", "🟡", "Potential reversal — bullish inside candle after bearish", 3))
+            # Bearish Harami
+            elif not bull1 and bull2 and c1 > o2 and o1 < c2 and b1 < 0.5*b2:
+                patterns.append(("Bearish Harami", "🟠", "Potential reversal — bearish inside candle after bullish", 3))
+            # Tweezer Top (two highs at same level)
+            elif abs(h1 - h2) / max(h1, 1) < 0.002 and bull2 and not bull1:
+                patterns.append(("Tweezer Top", "🔴", "Bearish reversal — two candles rejected at same high", 4))
+            # Tweezer Bottom
+            elif abs(l1 - l2) / max(l1, 1) < 0.002 and not bull2 and bull1:
+                patterns.append(("Tweezer Bottom", "🟢", "Bullish reversal — two candles rejected at same low", 4))
+
+        # ── 1-candle patterns ─────────────────────────────────────────────────
+        if not patterns:
+            if b1 < 0.05 * r1:
+                patterns.append(("Doji", "⚪", "Indecision — equal buying/selling pressure, watch next candle", 2))
+            elif b1 < 0.1 * r1 and uw1 > 2*lw1:
+                patterns.append(("Gravestone Doji", "🪦", "Bearish signal — buyers pushed up but sellers closed it back at open", 3))
+            elif b1 < 0.1 * r1 and lw1 > 2*uw1:
+                patterns.append(("Dragonfly Doji", "🐉", "Bullish signal — sellers pushed down but buyers recovered fully", 3))
+            elif bull1 and lw1 > 2*b1 and uw1 < 0.5*b1 and not bull2:
+                patterns.append(("Hammer", "🔨", "Bullish reversal — buyers rejected sharp sell-off", 4))
+            elif not bull1 and uw1 > 2*b1 and lw1 < 0.5*b1 and not bull2:
+                patterns.append(("Hanging Man", "🪝", "Bearish reversal — same shape as hammer but appears in uptrend", 3))
+            elif not bull1 and uw1 > 2*b1 and lw1 < 0.5*b1 and bull2:
+                patterns.append(("Shooting Star", "⭐", "Bearish reversal — sellers rejected the rally at the high", 4))
+            elif bull1 and uw1 > 2*b1 and lw1 < 0.3*b1 and not bull2:
+                patterns.append(("Inverted Hammer", "🔁", "Potential bullish reversal — needs confirmation next candle", 2))
+            elif bull1 and b1 > 0.85 * r1:
+                patterns.append(("Bullish Marubozu", "💚", "Full-body bull candle — strong momentum, likely continuation", 3))
+            elif not bull1 and b1 > 0.85 * r1:
+                patterns.append(("Bearish Marubozu", "🩸", "Full-body bear candle — heavy selling, watch for continuation", 3))
 
         if not patterns:
-            patterns.append(("No clear pattern", "⚫", "No single-candle signal detected"))
-        return patterns
+            patterns.append(("No clear pattern", "⚫", "No recognisable pattern — wait for clearer signal", 1))
+
+        # Sort by reliability descending
+        return sorted(patterns, key=lambda x: -x[3])
 
 
     def _compute_targets(df, resistances, supports):
-        """ATR stop, session trailing stop, Fibonacci targets."""
+        """
+        True-range ATR stops, Fibonacci extension targets, and R:R ratios.
+        Uses proper True Range (not just H-L) for ATR — same as Bloomberg/Reuters.
+        Fibonacci levels computed from the dominant 63-bar swing (not just 20-bar).
+        """
         if df is None or len(df) < 15:
             return {}
-        close = df["Close"]
-        atr = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
+        close  = df["Close"]
+        high   = df["High"]
+        low    = df["Low"]
+
+        # True Range ATR (accounts for overnight gaps — much more accurate than H-L)
+        _tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low  - close.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        atr = float(_tr.rolling(14).mean().iloc[-1])
+
         cur = float(close.iloc[-1])
-        recent_hi = float(df["High"].rolling(20).max().iloc[-1])
-        recent_lo = float(df["Low"].rolling(20).min().iloc[-1])
-        swing = recent_hi - recent_lo
+
+        # Dominant swing: use 63-bar (quarter) for swing traders; 20-bar for intraday
+        _lb_swing  = min(63, len(df) - 1)
+        _lb_intra  = min(20, len(df) - 1)
+        swing_hi   = float(high.rolling(_lb_swing).max().iloc[-1])
+        swing_lo   = float(low.rolling(_lb_swing).min().iloc[-1])
+        intra_hi   = float(high.rolling(_lb_intra).max().iloc[-1])
+        intra_lo   = float(low.rolling(_lb_intra).min().iloc[-1])
+        swing_rng  = swing_hi - swing_lo
 
         next_res = resistances[0] if resistances else round(cur + 2*atr, 2)
         next_sup = supports[0]    if supports    else round(cur - 2*atr, 2)
-        session_stop   = round(cur - 1.5 * atr, 2)   # tightest intraday stop
-        swing_stop     = round(cur - 2.5 * atr, 2)   # for swing traders
-        fib_618_up     = round(recent_lo + swing * 1.618, 2)
-        fib_100_up     = round(recent_lo + swing, 2)
-        measured_move  = round(cur + (next_res - cur) * 1.0, 2) if resistances else round(cur * 1.04, 2)
+
+        # ATR-based stops
+        session_stop = round(cur - 1.5 * atr, 2)   # tight intraday stop
+        swing_stop   = round(cur - 2.5 * atr, 2)   # swing trader stop
+        trail_stop   = round(cur - 3.0 * atr, 2)   # trailing stop for longer holds
+
+        # Fibonacci extension levels from dominant swing low
+        fib_382   = round(swing_lo + swing_rng * 1.382, 2)
+        fib_618   = round(swing_lo + swing_rng * 1.618, 2)
+        fib_100   = round(swing_lo + swing_rng, 2)
+        fib_200   = round(swing_lo + swing_rng * 2.0, 2)
+
+        # Measured move (breakout target)
+        measured_move = round(cur + (next_res - cur), 2) if resistances else round(cur * 1.04, 2)
+
+        # R:R ratios (using session_stop as 1R; reward = distance to next resistance)
+        _risk_1r   = max(cur - session_stop, 0.01)
+        _reward_r1 = max(next_res - cur, 0.01)
+        _reward_f1 = max(fib_618 - cur, 0.01)
+        rr_r1      = round(_reward_r1 / _risk_1r, 2)   # R:R to next resistance
+        rr_fib618  = round(_reward_f1 / _risk_1r, 2)   # R:R to Fib 1.618
 
         return {
             "cur": cur, "atr": atr,
             "next_resistance": next_res, "next_support": next_sup,
             "session_stop": session_stop, "swing_stop": swing_stop,
-            "fib_618": fib_618_up, "fib_100": fib_100_up,
+            "trail_stop": trail_stop,
+            "fib_382": fib_382, "fib_618": fib_618,
+            "fib_100": fib_100, "fib_200": fib_200,
             "measured_move": measured_move,
-            "recent_hi": recent_hi, "recent_lo": recent_lo,
+            "recent_hi": intra_hi, "recent_lo": intra_lo,
+            "swing_hi": swing_hi,  "swing_lo": swing_lo,
+            "rr_resistance": rr_r1, "rr_fib618": rr_fib618,
         }
 
 
@@ -13155,15 +13305,19 @@ with main_tab4:
                 # ── Pattern detected ─────────────────────────────────────────────
                 st.markdown("---")
                 if _pats:
-                    _pn, _pe, _pd = _pats[0]
-                    st.caption(f"Last candle pattern: **{_pe} {_pn}** — {_pd}")
+                    _pat_row = _pats[0]  # already sorted by reliability
+                    _pn, _pe, _pd = _pat_row[0], _pat_row[1], _pat_row[2]
+                    _pat_rel = _pat_row[3] if len(_pat_row) > 3 else 2
+                    _pat_stars = "★" * _pat_rel + "☆" * (5 - _pat_rel)
+                    st.caption(f"Last candle pattern: **{_pe} {_pn}** — {_pd}  ·  Reliability: {_pat_stars}")
 
-                # ── Key metrics ──────────────────────────────────────────────────
+                # ── Key metrics row 1 ────────────────────────────────────────────
                 _m1,_m2,_m3,_m4,_m5,_m6 = st.columns(6)
                 _m1.metric("Price",          f"{curr}{_cur_px:.2f}")
-                _m2.metric("RSI (14)",       f"{_sig.get('rsi',0):.1f}" if _sig.get("rsi") else "—",
-                           delta="Overbought" if (_sig.get("rsi") or 0)>70 else "Oversold" if (_sig.get("rsi") or 0)<30 else "Neutral",
-                           delta_color="inverse" if (_sig.get("rsi") or 0)>70 else "normal" if (_sig.get("rsi") or 0)<30 else "off")
+                _sig_rsi = _sig.get("rsi") or 0
+                _m2.metric("RSI (14)",       f"{_sig_rsi:.1f}" if _sig.get("rsi") else "—",
+                           delta="Overbought" if _sig_rsi > 70 else "Oversold" if _sig_rsi < 30 else "Neutral",
+                           delta_color="inverse" if _sig_rsi > 70 else "normal" if _sig_rsi < 30 else "off")
                 _m3.metric("MACD Hist",      f"{_sig.get('macd_hist',0):.3f}" if _sig.get("macd_hist") is not None else "—",
                            delta="Bullish" if (_sig.get("macd_hist") or 0)>0 else "Bearish",
                            delta_color="normal" if (_sig.get("macd_hist") or 0)>0 else "inverse")
@@ -13173,6 +13327,35 @@ with main_tab4:
                 _m6.metric("Vol Spike",      f"{_sig.get('vol_z',0):.1f}σ",
                            delta="High" if (_sig.get("vol_z") or 0)>2 else "Normal",
                            delta_color="inverse" if (_sig.get("vol_z") or 0)>2 else "off")
+
+                # ── Key metrics row 2 — ADX, Stochastic, R:R ────────────────────
+                _mx1,_mx2,_mx3,_mx4,_mx5,_mx6 = st.columns(6)
+                _sig_adx  = _sig.get("adx") or 20
+                _sig_stoch= _sig.get("stoch_k") or 50
+                _adx_label = ("Trending" if _sig_adx > 25 else "Ranging")
+                _mx1.metric("ADX (14)",      f"{_sig_adx:.0f}",
+                            delta=_adx_label,
+                            delta_color="normal" if _sig_adx > 25 else "off",
+                            help="ADX > 25 = trending (signals reliable); < 20 = ranging (signals noisy)")
+                _mx2.metric("Stochastic %K", f"{_sig_stoch:.0f}",
+                            delta="Overbought" if _sig_stoch > 80 else "Oversold" if _sig_stoch < 20 else "Neutral",
+                            delta_color="inverse" if _sig_stoch > 80 else "normal" if _sig_stoch < 20 else "off")
+                _rr_r1 = _tgt.get("rr_resistance", 0)
+                _mx3.metric("R:R (to resist.)", f"{_rr_r1:.1f}:1" if _rr_r1 else "—",
+                            delta="Good" if _rr_r1 >= 2 else "Thin" if _rr_r1 >= 1 else "Poor",
+                            delta_color="normal" if _rr_r1 >= 2 else "off" if _rr_r1 >= 1 else "inverse",
+                            help="Reward:Risk to next resistance using session stop as 1R")
+                _rr_fib = _tgt.get("rr_fib618", 0)
+                _mx4.metric("R:R (Fib 1.618)", f"{_rr_fib:.1f}:1" if _rr_fib else "—",
+                            delta="Good" if _rr_fib >= 2 else "Thin" if _rr_fib >= 1 else "Poor",
+                            delta_color="normal" if _rr_fib >= 2 else "off" if _rr_fib >= 1 else "inverse")
+                _mx5.metric("Swing Stop",    f"{curr}{_tgt.get('swing_stop',0):.2f}",
+                            delta=f"{(_tgt.get('swing_stop',_cur_px)-_cur_px)/_cur_px*100:+.1f}%",
+                            delta_color="inverse")
+                _mx6.metric("Trail Stop",    f"{curr}{_tgt.get('trail_stop',0):.2f}",
+                            delta=f"{(_tgt.get('trail_stop',_cur_px)-_cur_px)/_cur_px*100:+.1f}%",
+                            delta_color="inverse",
+                            help="3×ATR trailing stop — for longer holds where you want to ride the full trend")
 
                 # ── S/R + Targets panel ──────────────────────────────────────────
                 _ta_col, _tb_col = st.columns(2)
@@ -13193,16 +13376,25 @@ with main_tab4:
                         if not _sup:
                             st.caption("No clear support found in window")
 
-                # Targets row
-                _tc1,_tc2,_tc3,_tc4 = st.columns(4)
+                # Targets row — Fibonacci extension levels
+                _tc1,_tc2,_tc3,_tc4,_tc5 = st.columns(5)
                 _tc1.metric("Next Resistance", f"{curr}{_tgt.get('next_resistance',0):.2f}",
-                            delta=f"+{(_tgt.get('next_resistance',_cur_px)-_cur_px)/_cur_px*100:.1f}%", delta_color="off")
-                _tc2.metric("Swing Stop",      f"{curr}{_tgt.get('swing_stop',0):.2f}",
-                            delta=f"{(_tgt.get('swing_stop',_cur_px)-_cur_px)/_cur_px*100:+.1f}%", delta_color="inverse")
-                _tc3.metric("Fib 100% Target", f"{curr}{_tgt.get('fib_100',0):.2f}",
-                            delta=f"+{(_tgt.get('fib_100',_cur_px)-_cur_px)/_cur_px*100:.1f}%", delta_color="normal")
-                _tc4.metric("Fib 1.618 Target",f"{curr}{_tgt.get('fib_618',0):.2f}",
-                            delta=f"+{(_tgt.get('fib_618',_cur_px)-_cur_px)/_cur_px*100:.1f}%", delta_color="normal")
+                            delta=f"+{(_tgt.get('next_resistance',_cur_px)-_cur_px)/_cur_px*100:.1f}%",
+                            delta_color="off")
+                _tc2.metric("Fib 1.382 Target",f"{curr}{_tgt.get('fib_382',0):.2f}",
+                            delta=f"+{(_tgt.get('fib_382',_cur_px)-_cur_px)/_cur_px*100:.1f}%",
+                            delta_color="normal")
+                _tc3.metric("Fib 1.618 Target",f"{curr}{_tgt.get('fib_618',0):.2f}",
+                            delta=f"+{(_tgt.get('fib_618',_cur_px)-_cur_px)/_cur_px*100:.1f}%",
+                            delta_color="normal",
+                            help="Golden ratio extension — the most widely-watched target by quant and discretionary traders")
+                _tc4.metric("Fib 100% Target", f"{curr}{_tgt.get('fib_100',0):.2f}",
+                            delta=f"+{(_tgt.get('fib_100',_cur_px)-_cur_px)/_cur_px*100:.1f}%",
+                            delta_color="normal")
+                _tc5.metric("Fib 2.0 Target",  f"{curr}{_tgt.get('fib_200',0):.2f}",
+                            delta=f"+{(_tgt.get('fib_200',_cur_px)-_cur_px)/_cur_px*100:.1f}%",
+                            delta_color="normal",
+                            help="Full swing extension — aggressive target for strong trending moves")
 
                 # ── Today's Intraday Price Targets ───────────────────────────────
                 st.markdown("---")
