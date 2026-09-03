@@ -11081,13 +11081,15 @@ with main_tab2:  # ← replacement block starts here
     def _fetch_live_candles(sym: str, interval: str, period: str, prepost: bool = True):
         """Cached yfinance fetch with 15s TTL. Tries multiple period fallbacks for thin tickers."""
         # Period fallback ladder: some tickers return empty for short periods
+        # "1d" period on intraday interval = today's bars only (cleanest for intraday)
         _period_ladder = {
             "1m":  ["1d", "2d", "5d"],
-            "2m":  ["2d", "5d"],
-            "5m":  ["5d", "1mo"],
-            "15m": ["5d", "1mo"],
-            "30m": ["1mo"],
-            "1h":  ["3mo", "6mo"],
+            "2m":  ["1d", "2d", "5d"],
+            "5m":  ["1d", "2d", "5d", "1mo"],
+            "15m": ["1d", "2d", "5d", "1mo"],
+            "30m": ["5d", "1mo"],
+            "1h":  ["1mo", "3mo", "6mo"],
+            "1d":  ["3mo", "6mo", "1y"],
         }
         periods_to_try = _period_ladder.get(interval, [period])
         if period not in periods_to_try:
@@ -13119,10 +13121,21 @@ with main_tab4:
                                 st.session_state["lm_sym_input"] = _sm
                                 st.rerun()
             with _lmc2:
-                _lm_interval = st.selectbox("Interval", ["1m","2m","5m","15m","30m","1h"], index=2, key="lm_interval")
+                _lm_interval = st.selectbox("Interval", ["1m","2m","5m","15m","30m","1h","1d"], index=2, key="lm_interval")
             with _lmc3:
-                _lm_period = {"1m":"1d","2m":"2d","5m":"5d","15m":"5d","30m":"1mo","1h":"3mo"}.get(_lm_interval,"5d")
-                st.metric("Period", _lm_period)
+                # Period options and intraday-appropriate defaults per interval
+                # Shorter defaults = cleaner chart focused on today's action
+                _period_opts = {
+                    "1m":  (["1d", "2d", "5d"],           0),   # default: today only (78 candles)
+                    "2m":  (["1d", "2d", "5d"],           0),
+                    "5m":  (["1d", "2d", "5d", "1mo"],    0),   # default: today (78 candles, not 390)
+                    "15m": (["1d", "2d", "5d", "1mo"],    1),   # default: 2d (good swing context)
+                    "30m": (["5d", "1mo", "3mo"],          0),
+                    "1h":  (["1mo", "3mo", "6mo"],         0),
+                    "1d":  (["3mo", "6mo", "1y", "2y"],   1),
+                }
+                _popts, _pdef = _period_opts.get(_lm_interval, (["1d","5d","1mo"], 0))
+                _lm_period = st.selectbox("Period", _popts, index=_pdef, key=f"lm_period_{_lm_interval}")
             with _lmc4:
                 if st.button("🔄 Refresh", key="lm_manual_refresh", use_container_width=True, type="primary"):
                     _fetch_live_candles.clear()
