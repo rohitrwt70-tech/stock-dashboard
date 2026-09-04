@@ -7151,6 +7151,16 @@ with main_tab1:
             _stop_gap  = _base_entry - _base_stop
             _adj_stop  = round(_adj_entry - _stop_gap * (2 - _stop_mult) if _stop_mult > 0 else _adj_entry * 0.97, 2)
 
+            # _t4_price is 0.0 whenever the live price fetch failed (rate-limit,
+            # delisted ticker, network error) — that zero propagates through
+            # _base_entry/_adj_entry, so every %-based metric below must guard
+            # against dividing by zero instead of crashing the page.
+            if _base_entry <= 0:
+                st.warning(
+                    f"⚠️ Could not fetch a live price for {ticker} — position sizing below is "
+                    f"unreliable until price data is available. Try refreshing."
+                )
+
             # Display
             _adj_color = "#00c853" if _pos_size >= 65 else "#ff9800" if _pos_size >= 25 else "#ff5252"
 
@@ -7185,11 +7195,13 @@ with main_tab1:
             _dp1, _dp2, _dp3, _dp4 = st.columns(4)
             _dp1.metric("Adjusted Entry",
                         f"{curr}{_adj_entry:.2f}",
-                        delta=f"{(_adj_entry-_base_entry)/_base_entry*100:+.1f}% vs AI entry" if _entry_delay>0 else "At AI entry",
+                        delta=(f"{(_adj_entry-_base_entry)/_base_entry*100:+.1f}% vs AI entry"
+                               if _entry_delay > 0 and _base_entry > 0 else "At AI entry"),
                         delta_color="off")
             _dp2.metric("Adjusted Stop",
                         f"{curr}{_adj_stop:.2f}",
-                        delta=f"{(_adj_stop-_adj_entry)/_adj_entry*100:.1f}%",
+                        delta=(f"{(_adj_stop-_adj_entry)/_adj_entry*100:.1f}%"
+                               if _adj_entry > 0 else "—"),
                         delta_color="inverse")
             _dp3.metric("5-10 Day Target",  _fmt_ai_val(_ai_summary.get("target_1m")) if _ai_summary else "—")
             _dp4.metric("30-Day Target", _fmt_ai_val(_ai_summary.get("target_3m")) if _ai_summary else "—")
@@ -7204,7 +7216,9 @@ with main_tab1:
                 _ps3.metric("Max $ Loss",       f"${_pos_shares * _risk_per_share:,.0f}" if _pos_shares > 0 else "—",
                             delta=f"{_riskp * _pos_size / 100:.2f}% of account", delta_color="inverse")
                 _ps4.metric("Risk per Share",   f"{curr}{_risk_per_share:.2f}",
-                            delta=f"{_risk_per_share/_adj_entry*100:.1f}% stop distance", delta_color="off")
+                            delta=(f"{_risk_per_share/_adj_entry*100:.1f}% stop distance"
+                                   if _adj_entry > 0 else "—"),
+                            delta_color="off")
 
             # Final action banner
             if _pos_size >= 65:
