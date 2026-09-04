@@ -15325,15 +15325,17 @@ with main_tab7:
                         _mh  = _s.get("macd_hist") or 0
                         _bbp = _s.get("bb_pct") or 50
 
-                        # Correct buy/sell conditions:
-                        # BUY:  RSI in healthy momentum zone (45-65), MACD positive, not near BB upper
-                        # SELL: RSI overbought (>65), MACD negative, at BB upper band
-                        _buy  = (1 if 45 < _rsi < 65 else 0) + \
+                        # Buy/sell conditions — kept in sync with the Live Trade
+                        # Signals _mtf_signal() thresholds: RSI>65 alone is a
+                        # normal healthy rally, not a sell signal. Selling too
+                        # early there was the exact bug that flagged rising
+                        # stocks as EXIT; same fix applied here.
+                        _buy  = (1 if 45 < _rsi < 70 else 0) + \
                                 (1 if _mh > 0 else 0) + \
                                 (1 if _bbp < 65 else 0)
-                        _sell = (1 if _rsi > 65 else 0) + \
+                        _sell = (1 if _rsi > 75 else 0) + \
                                 (1 if _mh < 0 else 0) + \
-                                (1 if _bbp > 75 else 0)
+                                (1 if _bbp > 85 else 0)
 
                         if _s.get("signal") == "EXIT_NOW":
                             _votes.append("SELL")
@@ -15355,12 +15357,12 @@ with main_tab7:
                             _rsi_d = _s_d.get("rsi") or 50
                             _mh_d  = _s_d.get("macd_hist") or 0
                             _bbp_d = _s_d.get("bb_pct") or 50
-                            _buy_d  = (1 if 45 < _rsi_d < 65 else 0) + \
+                            _buy_d  = (1 if 45 < _rsi_d < 70 else 0) + \
                                       (1 if _mh_d > 0 else 0) + \
                                       (1 if _bbp_d < 65 else 0)
-                            _sell_d = (1 if _rsi_d > 65 else 0) + \
+                            _sell_d = (1 if _rsi_d > 75 else 0) + \
                                       (1 if _mh_d < 0 else 0) + \
-                                      (1 if _bbp_d > 75 else 0)
+                                      (1 if _bbp_d > 85 else 0)
                             # Count daily as all 3 votes (lower confidence — single TF)
                             _vote_d = "BUY" if _buy_d >= 2 else "SELL" if _sell_d >= 2 else "NEUTRAL"
                             _votes  = [_vote_d]  # 1 vote = lower confidence → scores 25/50/75 max
@@ -15395,7 +15397,7 @@ with main_tab7:
                 _hub_progress.progress((_hi + 1) / _total / 2,
                                        text=f"[Pass 1 · {_hi+1}/{_total}] {_hsym} — fetching…")
                 try:
-                    # ── Intraday candles (HF rules + MTF) ────────────────
+                    # ── Intraday candles (timing signal only) ────────────
                     _hdf5m = _fetch_live_candles(_hsym, "5m", "5d")
                     if _hdf5m is None or len(_hdf5m) < 20:
                         _hdf5m = _fetch_live_candles(_hsym, "1d", "3mo")
@@ -15405,11 +15407,19 @@ with main_tab7:
                                            "source": _hentry.get("source","—")})
                         continue
 
+                    # ── Daily candles (stable trend / S-R / targets) ─────
+                    # 5 days of 5-minute bars is noise, not trend — it also
+                    # mislabels short-term data as "200-day MA" etc. inside
+                    # _hedge_fund_rules. Same fix already applied to the Live
+                    # Trade Signals tab; mirrored here for the Hub.
+                    _hddaily = _fetch_live_candles(_hsym, "1d", "6mo")
+                    _hstable = _hddaily if (_hddaily is not None and len(_hddaily) >= 30) else _hdf5m
+
                     _hub_status.caption(f"⚙️ {_hsym} — HF rules + MTF…")
-                    _hsig        = _compute_live_signals(_hdf5m)
-                    _hhfr        = _hedge_fund_rules(_hdf5m)
-                    _hres, _hsup = _compute_sr_levels(_hdf5m)
-                    _htgt        = _compute_targets(_hdf5m, _hres, _hsup)
+                    _hsig        = _compute_live_signals(_hdf5m)            # intraday: timing
+                    _hhfr        = _hedge_fund_rules(_hstable)              # daily: stable trend
+                    _hres, _hsup = _compute_sr_levels(_hstable)             # daily: stable S/R
+                    _htgt        = _compute_targets(_hstable, _hres, _hsup) # daily: stable targets
 
                     _hclose    = float(_hdf5m["Close"].dropna().iloc[-1])
                     _hrsi      = _hsig.get("rsi") or 50
@@ -15568,23 +15578,33 @@ with main_tab7:
             _hub_progress.empty()
             _hub_status.empty()
 
-            # ── Normalise each layer across the batch so every layer spans
-            #    the same 0-100 range before weighting. Without this, fund_score
-            #    dominates because it has 3-4x more variance than HF/MTF.
+            # ── De-bias each layer's variance WITHOUT destroying its absolute
+            #    meaning. The previous approach used min-max stretch (worst→0,
+            #    best→100 within your selected batch) which GUARANTEES a
+            #    "90/100 strong buy" appears even when every stock you picked
+            #    is objectively mediocre — this produced false-confidence BUY
+            #    picks. Each raw layer is already anchored so 50 = neutral;
+            #    we only correct for one layer having disproportionately more
+            #    variance than the others, using a capped z-score re-centred
+            #    on 50 — never a full min→max stretch.
             _ok_res = [r for r in _hub_results if not r.get("error")]
+            _TARGET_STD = 16.0   # keeps normalised layers on a comparable, moderate spread
             for _layer in ("_raw_hf", "_raw_mtf", "_raw_fund", "_raw_pt"):
                 _vals = [r[_layer] for r in _ok_res if _layer in r]
-                if not _vals:
+                if len(_vals) < 3:
+                    # too few stocks to estimate variance reliably — keep the raw,
+                    # absolute value instead of fabricating a spread
+                    for r in _ok_res:
+                        if _layer in r:
+                            r[_layer + "_n"] = float(np.clip(r[_layer], 0, 100))
                     continue
-                _lo, _hi = min(_vals), max(_vals)
-                _span = _hi - _lo
+                _mean = float(np.mean(_vals))
+                _std  = float(np.std(_vals)) or 1.0
                 for r in _ok_res:
                     if _layer not in r:
                         continue
-                    if _span > 1:  # only normalise if there's actual spread
-                        r[_layer + "_n"] = (r[_layer] - _lo) / _span * 100
-                    else:
-                        r[_layer + "_n"] = 50.0  # all identical → neutral
+                    _z = (r[_layer] - _mean) / _std
+                    r[_layer + "_n"] = float(np.clip(50 + _z * _TARGET_STD, 0, 100))
 
             for r in _ok_res:
                 _hfn   = r.get("_raw_hf_n",   r.get("_raw_hf",   50))
@@ -15632,6 +15652,19 @@ with main_tab7:
             f"Pred Tracker {int(_disp_wp['w_pt']*100)}%"
         )
         _top3  = _res_ok[:3]
+
+        # With absolute-anchored scoring (50 = neutral), a top score below 55
+        # means nothing in this batch actually clears a real quality bar —
+        # say so explicitly instead of letting "Top 3" imply a confident pick.
+        if _top3 and _top3[0]["score"] < 55:
+            st.warning(
+                f"⚠️ **No strong picks in this batch.** Even the best-ranked stock "
+                f"({_top3[0]['symbol']}) only scores {_top3[0]['score']:.0f}/100 — "
+                f"these are the *least weak* of the stocks you selected, not "
+                f"confident buys. Consider widening your watchlist or waiting "
+                f"for a better setup."
+            )
+
         _medal = ["🥇", "🥈", "🥉"]
         for _ti, _tr in enumerate(_top3):
             _tc = "#00c853" if _tr["score"] >= 65 else "#ff9800" if _tr["score"] >= 45 else "#aaa"
@@ -15792,12 +15825,21 @@ with main_tab7:
             _existing_keys = {(r["date"], r["symbol"]) for r in _dlog}
             _synced    = []
 
-            # Determine BUY stocks: score >= 55 OR hf_verdict contains BUY OR mtf_label contains BUY
+            # Determine BUY stocks: composite score must clear a real bar AND
+            # at least one independent layer must confirm. The old rule was
+            # score>=55 OR any single loose signal — with the batch-relative
+            # min-max stretch that used to inflate scores, that OR-gate meant
+            # almost any selected stock could get logged as a BUY. Now that
+            # the score is absolute-anchored (50=neutral), AND-gating on a
+            # higher bar + independent confirmation is the meaningful filter.
             _buy_stocks = [
                 r for r in _res_ok
-                if r["score"] >= 55
-                or "BUY" in (r.get("hf_verdict") or "").upper()
-                or "BUY" in (r.get("mtf_label") or "").upper()
+                if r["score"] >= 60
+                and (
+                    "BUY" in (r.get("fund_verdict") or "").upper()
+                    or "BUY" in (r.get("hf_verdict") or "").upper()
+                    or r.get("mtf_buy_votes", 0) >= 2
+                )
             ]
 
             for _br in _buy_stocks:
