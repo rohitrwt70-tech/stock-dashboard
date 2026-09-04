@@ -4962,7 +4962,7 @@ def _compute_market_risk_score() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 st.title("🔮 Stock Predictor Model")
 
-main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8 = st.tabs([
+main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, main_tab8, main_tab9 = st.tabs([
     "📈 Analysis & Prediction",
     "🔍 Find Stocks",
     "💼 My Portfolio",
@@ -4971,6 +4971,7 @@ main_tab1, main_tab2, main_tab3, main_tab4, main_tab5, main_tab6, main_tab7, mai
     "📓 Prediction Tracker",
     "🗂️ My Stocks Hub",
     "🎲 Expectancy Calculator",
+    "📡 Screener",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -16659,3 +16660,180 @@ with main_tab8:
         "</div>",
         unsafe_allow_html=True
     )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 9 — SCREENER (price / volume / % change filters on today's market data)
+# ══════════════════════════════════════════════════════════════════════════════
+with main_tab9:
+    st.markdown("## 📡 Screener")
+    st.caption(
+        "Filter the US or Indian market by today's price, volume, and % change. "
+        "Results are cached for 3 minutes — re-run to refresh."
+    )
+
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _scr_universe(market: str):
+        return build_universe_us() if market == "US" else build_universe_india()
+
+    @st.cache_data(ttl=180, show_spinner=False)
+    def _scr_fetch_chunk(chunk_tuple):
+        """Fetch today's close/volume + previous close for a chunk of tickers."""
+        chunk = list(chunk_tuple)
+        out = {}
+        try:
+            raw = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
+                               threads=True, progress=False, auto_adjust=False)
+        except Exception:
+            return out
+        if raw is None or raw.empty:
+            return out
+        for sym in chunk:
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if sym not in raw.columns.get_level_values(0):
+                        continue
+                    df = raw[sym]
+                else:
+                    df = raw  # single-ticker chunk edge case: flat columns
+                if "Close" not in df.columns:
+                    continue
+                df = df.dropna(subset=["Close"])
+                if len(df) < 2:
+                    continue
+                today_close = float(df["Close"].iloc[-1])
+                prev_close  = float(df["Close"].iloc[-2])
+                today_vol   = (float(df["Volume"].iloc[-1])
+                               if "Volume" in df.columns and pd.notna(df["Volume"].iloc[-1]) else 0.0)
+                if today_close <= 0 or prev_close <= 0:
+                    continue
+                out[sym] = {
+                    "symbol":     sym,
+                    "price":      today_close,
+                    "prev_close": prev_close,
+                    "volume":     today_vol,
+                    "pct_change": (today_close - prev_close) / prev_close * 100,
+                    "date":       str(df.index[-1].date()),
+                }
+            except Exception:
+                continue
+        return out
+
+    # ── Market selector ──────────────────────────────────────────────────────
+    _scr_market_label = st.radio(
+        "Market",
+        ["🇺🇸 US Market", "🇮🇳 Indian Market"],
+        horizontal=True,
+        key="scr_market",
+    )
+    _scr_market = "US" if "US" in _scr_market_label else "India"
+    _scr_curr   = "$" if _scr_market == "US" else "₹"
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    st.markdown("#### Filters")
+    _f1, _f2, _f3 = st.columns(3)
+    with _f1:
+        st.markdown(f"**Price ({_scr_curr})**")
+        _scr_price_from = st.number_input("From", min_value=0.0, value=0.0,
+                                          step=1.0, key="scr_price_from")
+        _scr_price_to   = st.number_input("To", min_value=0.0, value=100000.0,
+                                          step=1.0, key="scr_price_to")
+    with _f2:
+        st.markdown("**Volume traded (today)**")
+        _scr_vol_from = st.number_input("From", min_value=0.0, value=0.0,
+                                        step=1000.0, format="%.0f", key="scr_vol_from")
+        _scr_vol_to   = st.number_input("To", min_value=0.0, value=1_000_000_000.0,
+                                        step=1000.0, format="%.0f", key="scr_vol_to")
+    with _f3:
+        st.markdown("**% Change (today)**")
+        _scr_chg_mode = st.radio("% change mode", ["Range", "Greater than"],
+                                  horizontal=True, key="scr_chg_mode",
+                                  label_visibility="collapsed")
+        if _scr_chg_mode == "Range":
+            _scr_chg_from = st.number_input("From (%)", value=-100.0, step=0.5, key="scr_chg_from")
+            _scr_chg_to   = st.number_input("To (%)",   value=100.0,  step=0.5, key="scr_chg_to")
+            _scr_chg_gt   = None
+        else:
+            _scr_chg_gt   = st.number_input("Greater than (%)", value=0.0, step=0.5, key="scr_chg_gt")
+            _scr_chg_from = _scr_chg_to = None
+
+    st.caption(
+        "Universe: **S&P 500 + Nasdaq 100** (US) or **Nifty 500 + Midcap 150 + Smallcap 250** (India)."
+    )
+
+    _scr_run = st.button("🔍 Run Screener", key="scr_run_btn", type="primary", use_container_width=True)
+
+    if _scr_run:
+        with st.spinner("Loading universe…"):
+            _universe = _scr_universe(_scr_market)
+        if not _universe:
+            st.error("Could not load the stock universe. Try again in a moment.")
+            st.session_state["scr_results"] = None
+        else:
+            _chunk_size = 100
+            _chunks = [_universe[i:i + _chunk_size] for i in range(0, len(_universe), _chunk_size)]
+            _scr_bar  = st.progress(0, text="Starting scan…")
+            _all_data = {}
+            for _ci, _chunk in enumerate(_chunks):
+                _all_data.update(_scr_fetch_chunk(tuple(_chunk)))
+                _scr_bar.progress(
+                    (_ci + 1) / len(_chunks),
+                    text=f"Scanning batch {_ci+1}/{len(_chunks)} — {len(_all_data)} stocks fetched"
+                )
+            _scr_bar.empty()
+            st.session_state["scr_results"] = _all_data
+            st.session_state["scr_results_meta"] = {
+                "market": _scr_market, "universe_size": len(_universe),
+                "fetched": len(_all_data), "ts": datetime.datetime.now().strftime("%H:%M:%S"),
+            }
+            st.rerun()
+
+    # ── Apply filters + display ──────────────────────────────────────────────
+    if st.session_state.get("scr_results"):
+        _all_data = st.session_state["scr_results"]
+        _meta     = st.session_state.get("scr_results_meta", {})
+
+        def _scr_passes(row):
+            if row["price"] < _scr_price_from or row["price"] > _scr_price_to:
+                return False
+            if row["volume"] < _scr_vol_from or row["volume"] > _scr_vol_to:
+                return False
+            if _scr_chg_mode == "Range":
+                if row["pct_change"] < _scr_chg_from or row["pct_change"] > _scr_chg_to:
+                    return False
+            else:
+                if row["pct_change"] <= _scr_chg_gt:
+                    return False
+            return True
+
+        _filtered = [r for r in _all_data.values() if _scr_passes(r)]
+        _filtered.sort(key=lambda r: r["pct_change"], reverse=True)
+
+        st.markdown("---")
+        st.markdown(f"### 📋 Results — {len(_filtered)} stocks match")
+        _last_date = next(iter(_all_data.values()))["date"] if _all_data else "—"
+        st.caption(
+            f"Scanned {_meta.get('fetched', len(_all_data))}/{_meta.get('universe_size','—')} "
+            f"{_meta.get('market','')} stocks as of {_meta.get('ts','—')} · data as of {_last_date}"
+        )
+
+        if not _filtered:
+            st.info("No stocks match these filters. Try widening the price/volume/% change range.")
+        else:
+            _tbl = [{
+                "Symbol":     r["symbol"],
+                "Price":      f"{_scr_curr}{r['price']:.2f}",
+                "Prev Close": f"{_scr_curr}{r['prev_close']:.2f}",
+                "% Change":   f"{r['pct_change']:+.2f}%",
+                "Volume":     f"{r['volume']:,.0f}",
+            } for r in _filtered]
+            _tbl_df = pd.DataFrame(_tbl)
+            st.dataframe(_tbl_df, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "⬇️ Download results as CSV",
+                data=_tbl_df.to_csv(index=False).encode(),
+                file_name=f"screener_{_scr_market}_{datetime.date.today()}.csv",
+                mime="text/csv",
+            )
+    else:
+        st.info("Set your filters above and click **Run Screener** to scan the market.")
