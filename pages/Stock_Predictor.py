@@ -16689,7 +16689,7 @@ with main_tab9:
         out = {}
         try:
             raw = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
-                               threads=True, progress=False, auto_adjust=False)
+                               threads=True, progress=False, auto_adjust=False, timeout=8)
         except Exception:
             return out, False
         if raw is None or raw.empty:
@@ -16724,6 +16724,24 @@ with main_tab9:
             except Exception:
                 continue
         return out, True
+
+    def _scr_call_with_timeout(fn, args, timeout_s):
+        """Run fn(*args) with a hard wall-clock timeout.
+        yf.download()'s own `timeout=` only bounds a single HTTP request —
+        under Yahoo rate-limiting it retries internally with backoff, so the
+        overall call can hang far longer than that and freeze the whole scan
+        (no way to interrupt it from outside). This enforces a real ceiling:
+        if the call hasn't returned in time, give up and move on — the
+        abandoned worker thread keeps running in the background but no
+        longer blocks the UI or the rest of the scan."""
+        _ex1 = ThreadPoolExecutor(max_workers=1)
+        _fut = _ex1.submit(fn, *args)
+        try:
+            return _fut.result(timeout=timeout_s)
+        except Exception:
+            return {}, False
+        finally:
+            _ex1.shutdown(wait=False)
 
     # ── Market selector ──────────────────────────────────────────────────────
     _scr_market_label = st.radio(
@@ -16787,16 +16805,23 @@ with main_tab9:
             # (as a previous version did) multiplies concurrent requests
             # far beyond what Yahoo tolerates from a single cloud IP and
             # was causing every batch to fail silently → "no results".
-            _chunk_size = 150
+            # Each chunk call is also wrapped in a hard 20s wall-clock
+            # timeout — under rate-limiting, yf.download()'s internal
+            # retry/backoff can hang far longer than its own timeout=
+            # setting suggests, which is what was freezing the scan.
+            _chunk_size = 75
+            _chunk_timeout_s = 20
             _chunks = [_universe[i:i + _chunk_size] for i in range(0, len(_universe), _chunk_size)]
             _scr_bar  = st.progress(0, text="Starting scan…")
             _all_data = {}
             _failed_chunks = 0
             for _ci, _chunk in enumerate(_chunks):
-                _data, _ok = _scr_fetch_chunk(tuple(_chunk))
+                _data, _ok = _scr_call_with_timeout(
+                    _scr_fetch_chunk, (tuple(_chunk),), _chunk_timeout_s)
                 if not _ok:
                     _scr_time.sleep(1.5)          # brief pause — transient rate-limit blips are common
-                    _data, _ok = _scr_fetch_chunk(tuple(_chunk), attempt=1)
+                    _data, _ok = _scr_call_with_timeout(
+                        _scr_fetch_chunk, (tuple(_chunk), 1), _chunk_timeout_s)
                 if not _ok:
                     _failed_chunks += 1
                 _all_data.update(_data)
