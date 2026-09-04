@@ -16673,7 +16673,10 @@ with main_tab9:
 
     @st.cache_data(ttl=86400, show_spinner=False)
     def _scr_universe(market: str):
-        return build_universe_us() if market == "US" else build_universe_india()
+        # Full SEC-registered list (~10k tickers) — micro/small/mid/large cap,
+        # not just S&P 500 + Nasdaq 100. India uses Nifty 500 + Midcap 150 +
+        # Smallcap 250, already broad across cap sizes.
+        return get_us_universe() if market == "US" else build_universe_india()
 
     @st.cache_data(ttl=180, show_spinner=False)
     def _scr_fetch_chunk(chunk_tuple):
@@ -16756,9 +16759,13 @@ with main_tab9:
             _scr_chg_gt   = st.number_input("Greater than (%)", value=0.0, step=0.5, key="scr_chg_gt")
             _scr_chg_from = _scr_chg_to = None
 
-    st.caption(
-        "Universe: **S&P 500 + Nasdaq 100** (US) or **Nifty 500 + Midcap 150 + Smallcap 250** (India)."
-    )
+    if _scr_market == "US":
+        st.caption(
+            "Universe: **all SEC-registered US-listed stocks** — micro, small, mid, and large cap "
+            "(~10,000 tickers). A full scan can take a few minutes."
+        )
+    else:
+        st.caption("Universe: **Nifty 500 + Midcap 150 + Smallcap 250** (India).")
 
     _scr_run = st.button("🔍 Run Screener", key="scr_run_btn", type="primary", use_container_width=True)
 
@@ -16769,16 +16776,24 @@ with main_tab9:
             st.error("Could not load the stock universe. Try again in a moment.")
             st.session_state["scr_results"] = None
         else:
-            _chunk_size = 100
+            _chunk_size  = 200
+            _max_workers = 6   # bounded parallelism — large US universe needs this to finish in reasonable time
             _chunks = [_universe[i:i + _chunk_size] for i in range(0, len(_universe), _chunk_size)]
             _scr_bar  = st.progress(0, text="Starting scan…")
             _all_data = {}
-            for _ci, _chunk in enumerate(_chunks):
-                _all_data.update(_scr_fetch_chunk(tuple(_chunk)))
-                _scr_bar.progress(
-                    (_ci + 1) / len(_chunks),
-                    text=f"Scanning batch {_ci+1}/{len(_chunks)} — {len(_all_data)} stocks fetched"
-                )
+            _done = 0
+            with ThreadPoolExecutor(max_workers=_max_workers) as _ex:
+                _futs = {_ex.submit(_scr_fetch_chunk, tuple(c)): c for c in _chunks}
+                for _fut in as_completed(_futs):
+                    _done += 1
+                    try:
+                        _all_data.update(_fut.result(timeout=45))
+                    except Exception:
+                        pass
+                    _scr_bar.progress(
+                        _done / len(_chunks),
+                        text=f"Scanning batch {_done}/{len(_chunks)} — {len(_all_data)} stocks fetched"
+                    )
             _scr_bar.empty()
             st.session_state["scr_results"] = _all_data
             st.session_state["scr_results_meta"] = {
