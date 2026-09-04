@@ -16694,15 +16694,18 @@ with main_tab9:
 
     @st.cache_data(ttl=180, show_spinner=False)
     def _scr_fetch_chunk(chunk_tuple, attempt=0):
-        """Fetch today's close/volume + previous close for a chunk of tickers.
-        Returns (data_dict, ok). ok=False means the WHOLE batch call itself
-        failed (exception, empty response) — distinct from a batch that
-        legitimately returned data but some tickers had no rows (delisted
-        etc). Callers use ok to detect Yahoo Finance rate-limiting."""
+        """Fetch today's OHLCV + trailing month of daily bars for a chunk of
+        tickers. Returns (data_dict, ok). ok=False means the WHOLE batch call
+        itself failed (exception, empty response) — distinct from a batch
+        that legitimately returned data but some tickers had no rows
+        (delisted etc). Callers use ok to detect Yahoo Finance rate-limiting.
+
+        period="1mo" (not "5d") so there's enough trailing history to compute
+        a 20-day average volume for Relative Volume."""
         chunk = list(chunk_tuple)
         out = {}
         try:
-            raw = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
+            raw = yf.download(chunk, period="1mo", interval="1d", group_by="ticker",
                                threads=True, progress=False, auto_adjust=False, timeout=8)
         except Exception:
             return out, False
@@ -16723,16 +16726,32 @@ with main_tab9:
                     continue
                 today_close = float(df["Close"].iloc[-1])
                 prev_close  = float(df["Close"].iloc[-2])
+                today_open  = (float(df["Open"].iloc[-1])
+                               if "Open" in df.columns and pd.notna(df["Open"].iloc[-1]) else today_close)
                 today_vol   = (float(df["Volume"].iloc[-1])
                                if "Volume" in df.columns and pd.notna(df["Volume"].iloc[-1]) else 0.0)
                 if today_close <= 0 or prev_close <= 0:
                     continue
+
+                # Relative Volume: today's volume vs. average of the prior
+                # (up to 20) trading days, excluding today itself
+                _rel_vol = None
+                if "Volume" in df.columns:
+                    _prior_vol = df["Volume"].iloc[:-1].dropna()
+                    _prior_vol = _prior_vol.iloc[-20:]  # up to 20 prior sessions
+                    _avg_vol = float(_prior_vol.mean()) if len(_prior_vol) >= 3 else None
+                    if _avg_vol and _avg_vol > 0:
+                        _rel_vol = today_vol / _avg_vol
+
                 out[sym] = {
                     "symbol":     sym,
                     "price":      today_close,
                     "prev_close": prev_close,
+                    "open":       today_open,
                     "volume":     today_vol,
                     "pct_change": (today_close - prev_close) / prev_close * 100,
+                    "gap_pct":    (today_open - prev_close) / prev_close * 100,
+                    "rel_volume": _rel_vol,
                     "date":       str(df.index[-1].date()),
                 }
             except Exception:
@@ -16824,6 +16843,32 @@ with main_tab9:
             _scr_float_mode = None
             _scr_float_gt = _scr_float_lt = _scr_float_from = _scr_float_to = None
 
+    _f5, _f6 = st.columns(2)
+    with _f5:
+        st.markdown("**Gap % (open vs. yesterday's close)**")
+        _scr_gap_mode = st.radio("Gap mode", ["Range", "Greater than"],
+                                  horizontal=True, key="scr_gap_mode",
+                                  label_visibility="collapsed")
+        if _scr_gap_mode == "Range":
+            _scr_gap_from = st.number_input("From (%)", value=-100.0, step=0.5, key="scr_gap_from")
+            _scr_gap_to   = st.number_input("To (%)",   value=100.0,  step=0.5, key="scr_gap_to")
+            _scr_gap_gt   = None
+        else:
+            _scr_gap_gt   = st.number_input("Greater than (%)", value=5.0, step=0.5, key="scr_gap_gt")
+            _scr_gap_from = _scr_gap_to = None
+    with _f6:
+        st.markdown("**Relative Volume (vs. 20-day avg)**")
+        _scr_rvol_mode = st.radio("Relative volume mode", ["Range", "Greater than"],
+                                   horizontal=True, key="scr_rvol_mode",
+                                   label_visibility="collapsed")
+        if _scr_rvol_mode == "Range":
+            _scr_rvol_from = st.number_input("From (×)", min_value=0.0, value=0.0, step=0.5, key="scr_rvol_from")
+            _scr_rvol_to   = st.number_input("To (×)",   min_value=0.0, value=100.0, step=0.5, key="scr_rvol_to")
+            _scr_rvol_gt   = None
+        else:
+            _scr_rvol_gt   = st.number_input("Greater than (×)", min_value=0.0, value=2.0, step=0.5, key="scr_rvol_gt")
+            _scr_rvol_from = _scr_rvol_to = None
+
     if _scr_market == "US":
         st.caption(
             "Universe: **all SEC-registered US-listed stocks** — micro, small, mid, and large cap "
@@ -16831,6 +16876,10 @@ with main_tab9:
         )
     else:
         st.caption("Universe: **Nifty 500 + Midcap 150 + Smallcap 250** (India).")
+    st.caption(
+        "Relative Volume needs ≥3 prior trading days of history to compute — very recent IPOs "
+        "are excluded from results by the Relative Volume filter."
+    )
 
     _scr_run = st.button("🔍 Run Screener", key="scr_run_btn", type="primary", use_container_width=True)
 
@@ -16918,6 +16967,19 @@ with main_tab9:
             else:
                 if row["pct_change"] <= _scr_chg_gt:
                     return False
+            if _scr_gap_mode == "Range":
+                if row["gap_pct"] < _scr_gap_from or row["gap_pct"] > _scr_gap_to:
+                    return False
+            else:
+                if row["gap_pct"] <= _scr_gap_gt:
+                    return False
+            _rv = row.get("rel_volume")
+            if _scr_rvol_mode == "Range":
+                if _rv is None or _rv < _scr_rvol_from or _rv > _scr_rvol_to:
+                    return False
+            else:
+                if _rv is None or _rv <= _scr_rvol_gt:
+                    return False
             return True
 
         _filtered = [r for r in _all_data.values() if _scr_passes(r)]
@@ -16970,6 +17032,41 @@ with main_tab9:
 
         _filtered.sort(key=lambda r: r["pct_change"], reverse=True)
 
+        # ── Top 5 leaderboards — from the FULL scan, independent of the
+        #    filters above, so you always see the day's biggest movers
+        #    regardless of what price/volume/% change range is set. ────────
+        _lb_candidates = list(_all_data.values())
+        if _lb_candidates:
+            st.markdown("---")
+            st.markdown("### 🏆 Top Movers")
+            st.caption("From the full scan — independent of the filters above.")
+            _lb1, _lb2, _lb3 = st.columns(3)
+
+            def _render_leaderboard(col, title, rows, value_label, value_fn):
+                with col:
+                    st.markdown(f"**{title}**")
+                    if not rows:
+                        st.caption("No data")
+                        return
+                    _lbtbl = [{
+                        "Symbol":    r["symbol"],
+                        "Price":     f"{_scr_curr}{r['price']:.2f}",
+                        value_label: value_fn(r),
+                    } for r in rows]
+                    st.dataframe(pd.DataFrame(_lbtbl), use_container_width=True, hide_index=True)
+
+            _top_gainers = sorted(_lb_candidates, key=lambda r: r["pct_change"], reverse=True)[:5]
+            _top_gappers = sorted(_lb_candidates, key=lambda r: r["gap_pct"], reverse=True)[:5]
+            _top_rvol    = sorted([r for r in _lb_candidates if r.get("rel_volume") is not None],
+                                   key=lambda r: r["rel_volume"], reverse=True)[:5]
+
+            _render_leaderboard(_lb1, "📈 Top 5 Gainers (% Change)", _top_gainers,
+                                 "% Change", lambda r: f"{r['pct_change']:+.2f}%")
+            _render_leaderboard(_lb2, "🚀 Top 5 Gappers (Gap %)", _top_gappers,
+                                 "Gap %", lambda r: f"{r['gap_pct']:+.2f}%")
+            _render_leaderboard(_lb3, "🔥 Top 5 Relative Volume", _top_rvol,
+                                 "Rel Vol", lambda r: f"{r['rel_volume']:.1f}×")
+
         st.markdown("---")
         st.markdown(f"### 📋 Results — {len(_filtered)} stocks match")
         _last_date = next(iter(_all_data.values()))["date"] if _all_data else "—"
@@ -16997,7 +17094,9 @@ with main_tab9:
                 "Price":      f"{_scr_curr}{r['price']:.2f}",
                 "Prev Close": f"{_scr_curr}{r['prev_close']:.2f}",
                 "% Change":   f"{r['pct_change']:+.2f}%",
+                "Gap %":      f"{r['gap_pct']:+.2f}%",
                 "Volume":     f"{r['volume']:,.0f}",
+                "Rel Vol":    f"{r['rel_volume']:.1f}×" if r.get("rel_volume") is not None else "—",
                 **({"Float": _fmt_float_shares(r.get("float"))} if _scr_float_on else {}),
             } for r in _filtered]
             _tbl_df = pd.DataFrame(_tbl)
