@@ -16769,7 +16769,7 @@ with main_tab9:
 
     # ── Filters ───────────────────────────────────────────────────────────────
     st.markdown("#### Filters")
-    _f1, _f2, _f3 = st.columns(3)
+    _f1, _f2, _f3, _f4 = st.columns(4)
     with _f1:
         st.markdown(f"**Price ({_scr_curr})**")
         _scr_price_from = st.number_input("From", min_value=0.0, value=0.0,
@@ -16794,6 +16794,35 @@ with main_tab9:
         else:
             _scr_chg_gt   = st.number_input("Greater than (%)", value=0.0, step=0.5, key="scr_chg_gt")
             _scr_chg_from = _scr_chg_to = None
+    with _f4:
+        st.markdown("**Float (shares available to trade)**")
+        _scr_float_on = st.checkbox(
+            "Filter by float", value=False, key="scr_float_on",
+            help="Float = shares publicly available to trade (excludes insider/locked-up shares). "
+                 "Fetched only for stocks that already pass the filters above, since it's a slower "
+                 "lookup — adds time to the scan when enabled."
+        )
+        if _scr_float_on:
+            _scr_float_mode = st.radio("Float mode", ["Greater than", "Less than", "Range"],
+                                        horizontal=True, key="scr_float_mode",
+                                        label_visibility="collapsed")
+            if _scr_float_mode == "Greater than":
+                _scr_float_gt = st.number_input("Greater than (shares)", min_value=0.0, value=10_000_000.0,
+                                                step=1_000_000.0, format="%.0f", key="scr_float_gt")
+                _scr_float_lt = _scr_float_from = _scr_float_to = None
+            elif _scr_float_mode == "Less than":
+                _scr_float_lt = st.number_input("Less than (shares)", min_value=0.0, value=50_000_000.0,
+                                                step=1_000_000.0, format="%.0f", key="scr_float_lt")
+                _scr_float_gt = _scr_float_from = _scr_float_to = None
+            else:
+                _scr_float_from = st.number_input("From (shares)", min_value=0.0, value=0.0,
+                                                   step=1_000_000.0, format="%.0f", key="scr_float_from")
+                _scr_float_to   = st.number_input("To (shares)", min_value=0.0, value=1_000_000_000.0,
+                                                   step=1_000_000.0, format="%.0f", key="scr_float_to")
+                _scr_float_gt = _scr_float_lt = None
+        else:
+            _scr_float_mode = None
+            _scr_float_gt = _scr_float_lt = _scr_float_from = _scr_float_to = None
 
     if _scr_market == "US":
         st.caption(
@@ -16892,6 +16921,53 @@ with main_tab9:
             return True
 
         _filtered = [r for r in _all_data.values() if _scr_passes(r)]
+
+        # ── Float filter (opt-in, applied only to survivors) ────────────────
+        # Float shares aren't in the price/volume batch — they come from
+        # yf.Ticker().info, a separate, slower, per-ticker endpoint. Fetching
+        # it for the whole 10k-ticker universe would be far too slow, so it's
+        # only fetched for stocks that already passed price/volume/% change.
+        if _scr_float_on and _filtered:
+            if len(_filtered) > 1500:
+                st.warning(
+                    f"⚠️ Float filter needs to check {len(_filtered)} stocks individually — this "
+                    f"will take a while. Narrow the price/volume/% change filters first for a faster scan."
+                )
+            _flt_bar  = st.progress(0, text="Fetching float data…")
+            _flt_map  = {}
+            with ThreadPoolExecutor(max_workers=8) as _flt_ex:
+                _flt_futs = {_flt_ex.submit(_fetch_yf_info, r["symbol"]): r["symbol"] for r in _filtered}
+                _flt_done = 0
+                for _flt_fut in as_completed(_flt_futs):
+                    _flt_done += 1
+                    _flt_sym = _flt_futs[_flt_fut]
+                    try:
+                        _flt_info = _flt_fut.result(timeout=10)
+                        _fs = _flt_info.get("floatShares") if _flt_info else None
+                        _flt_map[_flt_sym] = float(_fs) if _fs else None
+                    except Exception:
+                        _flt_map[_flt_sym] = None
+                    _flt_bar.progress(
+                        _flt_done / len(_filtered),
+                        text=f"Fetching float {_flt_done}/{len(_filtered)}"
+                    )
+            _flt_bar.empty()
+
+            def _scr_float_passes(sym):
+                fs = _flt_map.get(sym)
+                if fs is None:
+                    return False  # can't verify float — exclude rather than guess
+                if _scr_float_mode == "Greater than":
+                    return fs > _scr_float_gt
+                elif _scr_float_mode == "Less than":
+                    return fs < _scr_float_lt
+                else:
+                    return _scr_float_from <= fs <= _scr_float_to
+
+            for r in _filtered:
+                r["float"] = _flt_map.get(r["symbol"])
+            _filtered = [r for r in _filtered if _scr_float_passes(r["symbol"])]
+
         _filtered.sort(key=lambda r: r["pct_change"], reverse=True)
 
         st.markdown("---")
@@ -16906,14 +16982,23 @@ with main_tab9:
             if not _all_data:
                 st.info("No data was fetched for this scan — see the message above for why.")
             else:
-                st.info("No stocks match these filters. Try widening the price/volume/% change range.")
+                st.info("No stocks match these filters. Try widening the price/volume/% change/float range.")
         else:
+            def _fmt_float_shares(v):
+                if v is None:
+                    return "—"
+                if v >= 1e9:  return f"{v/1e9:.2f}B"
+                if v >= 1e6:  return f"{v/1e6:.1f}M"
+                if v >= 1e3:  return f"{v/1e3:.0f}K"
+                return f"{v:,.0f}"
+
             _tbl = [{
                 "Symbol":     r["symbol"],
                 "Price":      f"{_scr_curr}{r['price']:.2f}",
                 "Prev Close": f"{_scr_curr}{r['prev_close']:.2f}",
                 "% Change":   f"{r['pct_change']:+.2f}%",
                 "Volume":     f"{r['volume']:,.0f}",
+                **({"Float": _fmt_float_shares(r.get("float"))} if _scr_float_on else {}),
             } for r in _filtered]
             _tbl_df = pd.DataFrame(_tbl)
             st.dataframe(_tbl_df, use_container_width=True, hide_index=True)
