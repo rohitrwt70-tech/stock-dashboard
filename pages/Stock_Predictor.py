@@ -16679,17 +16679,21 @@ with main_tab9:
         return get_us_universe() if market == "US" else build_universe_india()
 
     @st.cache_data(ttl=180, show_spinner=False)
-    def _scr_fetch_chunk(chunk_tuple):
-        """Fetch today's close/volume + previous close for a chunk of tickers."""
+    def _scr_fetch_chunk(chunk_tuple, attempt=0):
+        """Fetch today's close/volume + previous close for a chunk of tickers.
+        Returns (data_dict, ok). ok=False means the WHOLE batch call itself
+        failed (exception, empty response) — distinct from a batch that
+        legitimately returned data but some tickers had no rows (delisted
+        etc). Callers use ok to detect Yahoo Finance rate-limiting."""
         chunk = list(chunk_tuple)
         out = {}
         try:
             raw = yf.download(chunk, period="5d", interval="1d", group_by="ticker",
                                threads=True, progress=False, auto_adjust=False)
         except Exception:
-            return out
+            return out, False
         if raw is None or raw.empty:
-            return out
+            return out, False
         for sym in chunk:
             try:
                 if isinstance(raw.columns, pd.MultiIndex):
@@ -16719,7 +16723,7 @@ with main_tab9:
                 }
             except Exception:
                 continue
-        return out
+        return out, True
 
     # ── Market selector ──────────────────────────────────────────────────────
     _scr_market_label = st.radio(
@@ -16776,36 +16780,64 @@ with main_tab9:
             st.error("Could not load the stock universe. Try again in a moment.")
             st.session_state["scr_results"] = None
         else:
-            _chunk_size  = 200
-            _max_workers = 6   # bounded parallelism — large US universe needs this to finish in reasonable time
+            import time as _scr_time
+            # Sequential, single chunk at a time. yf.download() already
+            # parallelises internally with its own pacing to avoid Yahoo's
+            # rate limiter — stacking an OUTER thread pool on top of that
+            # (as a previous version did) multiplies concurrent requests
+            # far beyond what Yahoo tolerates from a single cloud IP and
+            # was causing every batch to fail silently → "no results".
+            _chunk_size = 150
             _chunks = [_universe[i:i + _chunk_size] for i in range(0, len(_universe), _chunk_size)]
             _scr_bar  = st.progress(0, text="Starting scan…")
             _all_data = {}
-            _done = 0
-            with ThreadPoolExecutor(max_workers=_max_workers) as _ex:
-                _futs = {_ex.submit(_scr_fetch_chunk, tuple(c)): c for c in _chunks}
-                for _fut in as_completed(_futs):
-                    _done += 1
-                    try:
-                        _all_data.update(_fut.result(timeout=45))
-                    except Exception:
-                        pass
-                    _scr_bar.progress(
-                        _done / len(_chunks),
-                        text=f"Scanning batch {_done}/{len(_chunks)} — {len(_all_data)} stocks fetched"
-                    )
+            _failed_chunks = 0
+            for _ci, _chunk in enumerate(_chunks):
+                _data, _ok = _scr_fetch_chunk(tuple(_chunk))
+                if not _ok:
+                    _scr_time.sleep(1.5)          # brief pause — transient rate-limit blips are common
+                    _data, _ok = _scr_fetch_chunk(tuple(_chunk), attempt=1)
+                if not _ok:
+                    _failed_chunks += 1
+                _all_data.update(_data)
+                _scr_bar.progress(
+                    (_ci + 1) / len(_chunks),
+                    text=f"Scanning batch {_ci+1}/{len(_chunks)} — {len(_all_data)} stocks fetched"
+                    + (f" · {_failed_chunks} batches failed" if _failed_chunks else "")
+                )
+                _scr_time.sleep(0.25)             # courtesy pacing between batches
             _scr_bar.empty()
             st.session_state["scr_results"] = _all_data
             st.session_state["scr_results_meta"] = {
                 "market": _scr_market, "universe_size": len(_universe),
                 "fetched": len(_all_data), "ts": datetime.datetime.now().strftime("%H:%M:%S"),
+                "failed_chunks": _failed_chunks, "total_chunks": len(_chunks),
             }
             st.rerun()
 
     # ── Apply filters + display ──────────────────────────────────────────────
-    if st.session_state.get("scr_results"):
+    # NOTE: check `is not None`, not truthiness — an empty dict {} (a scan
+    # that ran but fetched zero stocks, e.g. from rate-limiting) must still
+    # reach this block so the failed-batch diagnostic below can be shown,
+    # instead of silently falling through to "click Run Screener".
+    if st.session_state.get("scr_results") is not None:
         _all_data = st.session_state["scr_results"]
         _meta     = st.session_state.get("scr_results_meta", {})
+
+        _failed_ct = _meta.get("failed_chunks", 0)
+        _total_ct  = _meta.get("total_chunks", 0)
+        if _total_ct and _failed_ct >= _total_ct:
+            st.error(
+                "⚠️ Every batch failed to fetch — Yahoo Finance is rate-limiting this server "
+                "right now. Wait a minute and click **Run Screener** again."
+            )
+        elif _total_ct and _failed_ct > _total_ct * 0.25:
+            st.warning(
+                f"⚠️ {_failed_ct}/{_total_ct} batches failed to fetch (likely Yahoo Finance "
+                f"rate-limiting) — results below are incomplete. Try again in a minute for a full scan."
+            )
+        elif _failed_ct:
+            st.caption(f"Note: {_failed_ct}/{_total_ct} batches failed after retry — a few stocks may be missing.")
 
         def _scr_passes(row):
             if row["price"] < _scr_price_from or row["price"] > _scr_price_to:
@@ -16832,7 +16864,10 @@ with main_tab9:
         )
 
         if not _filtered:
-            st.info("No stocks match these filters. Try widening the price/volume/% change range.")
+            if not _all_data:
+                st.info("No data was fetched for this scan — see the message above for why.")
+            else:
+                st.info("No stocks match these filters. Try widening the price/volume/% change range.")
         else:
             _tbl = [{
                 "Symbol":     r["symbol"],
