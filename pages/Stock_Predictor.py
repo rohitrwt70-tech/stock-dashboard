@@ -79,6 +79,24 @@ def _yf_history(sym: str, **kwargs):
         import pandas as _pd_safe
         return _pd_safe.DataFrame()
 
+
+def _call_with_timeout(fn, args=(), timeout_s=10):
+    """Run fn(*args) with a hard wall-clock timeout, returning None on
+    timeout/failure. A library's own `timeout=` parameter (requests,
+    yfinance, etc.) often only bounds inter-byte read gaps, not total call
+    duration — a slow-but-trickling response can still hang far longer than
+    the stated timeout (confirmed: SEC EDGAR took 20s+ despite timeout=10).
+    This enforces a real ceiling. The abandoned worker thread keeps running
+    in the background but no longer blocks the caller."""
+    _ex = ThreadPoolExecutor(max_workers=1)
+    _fut = _ex.submit(fn, *args)
+    try:
+        return _fut.result(timeout=timeout_s)
+    except Exception:
+        return None
+    finally:
+        _ex.shutdown(wait=False)
+
 # ── Sidebar (top-level) ───────────────────────────────────────────────────────
 MARKETS = {
     "🇮🇳 NSE (India)": {
@@ -252,7 +270,11 @@ def search_stocks(query: str):
 @st.cache_data(ttl=86400)
 def get_us_universe():
     # Primary: SEC EDGAR — all ~10k US-listed companies, no API key needed
-    try:
+    # Wrapped in a hard timeout: SEC EDGAR has been observed taking 20s+
+    # despite requests' own timeout=10 (a slow-but-trickling response isn't
+    # caught by requests' read-gap timeout), which would otherwise hang
+    # this — and anything that calls it — for far longer than expected.
+    def _fetch_sec():
         r = requests.get(
             "https://www.sec.gov/files/company_tickers.json",
             headers={"User-Agent": "StockDashboard rohitrwt70@gmail.com"},
@@ -263,17 +285,18 @@ def get_us_universe():
             tickers = sorted({v["ticker"] for v in data.values() if v.get("ticker")})
             if len(tickers) > 1000:
                 return tickers
-    except Exception:
-        pass
+        return None
+
+    _sec_tickers = _call_with_timeout(_fetch_sec, timeout_s=12)
+    if _sec_tickers:
+        return _sec_tickers
 
     # Fallback: S&P 500 core
-    sp500 = []
-    try:
+    def _fetch_sp500():
         url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
-        sp500_df = pd.read_csv(url, timeout=8)
-        sp500 = sp500_df["Symbol"].tolist()
-    except Exception:
-        pass
+        return pd.read_csv(url)["Symbol"].tolist()
+
+    sp500 = _call_with_timeout(_fetch_sp500, timeout_s=10) or []
 
     # Comprehensive US ticker list: S&P 500, Nasdaq 100, Russell 1000 leaders,
     # popular mid/small caps, sector ETFs, and recent spinoffs/IPOs
@@ -586,7 +609,19 @@ if "code" in _qp and _qp.get("state") == "stockdashboard":
 
 with st.sidebar:
     _india_fallback = ["RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS","SBIN.NS","BHARTIARTL.NS","ITC.NS","LT.NS","KOTAKBANK.NS","AXISBANK.NS","WIPRO.NS","HCLTECH.NS","SUNPHARMA.NS","MARUTI.NS","TITAN.NS","BAJFINANCE.NS","NTPC.NS","POWERGRID.NS","TATAMOTORS.NS","TATASTEEL.NS","ADANIPORTS.NS","ONGC.NS","COALINDIA.NS","DRREDDY.NS","CIPLA.NS","ZOMATO.NS","IRCTC.NS","HAL.NS","BEL.NS","TATAPOWER.NS","POLYCAB.NS","HAVELLS.NS","PERSISTENT.NS","COFORGE.NS","MPHASIS.NS","LTIM.NS"]
-    _us_fallback = get_us_universe() if "🇺🇸" in market_label else []
+    # Small static list — NOT get_us_universe(), which fetches the full
+    # ~10k SEC EDGAR ticker list over the network. That call was running
+    # unconditionally on every single page load (any time US market was
+    # selected) and has been observed hanging 20s+ despite its own
+    # timeout=10, which could make the entire app appear stuck before any
+    # tab even renders. A sidebar search dropdown never needed all 10k
+    # tickers anyway — the full universe is still used by the Screener tab,
+    # where it's an explicit, opt-in "Run Screener" action.
+    _us_fallback = ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","BRK-B","JPM",
+                     "V","MA","UNH","LLY","XOM","WMT","JNJ","PG","HD","COST",
+                     "ORCL","NFLX","AMD","ADBE","CRM","BAC","KO","PEP","TMO","MRK",
+                     "DIS","ABBV","CSCO","ACN","MCD","INTC","QCOM","TXN","IBM","GE",
+                     "CAT","BA","GS","NKE","SBUX","PYPL","UBER","PLTR","COIN","SOFI"] if "🇺🇸" in market_label else []
     _sidebar_tickers = _us_fallback if "🇺🇸" in market_label else _india_fallback
     raw = st.selectbox(
         "Search Stock",
