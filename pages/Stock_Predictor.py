@@ -624,13 +624,24 @@ with st.sidebar:
                      "CAT","BA","GS","NKE","SBUX","PYPL","UBER","PLTR","COIN","SOFI"] if "🇺🇸" in market_label else []
     _sidebar_tickers = _us_fallback if "🇺🇸" in market_label else _india_fallback
     raw = st.selectbox(
-        "Search Stock",
+        "Search Stock (common tickers)",
         options=[""] + _sidebar_tickers,
         index=0,
         placeholder=market["placeholder"],
         key=f"pred_search_{market_label}",
         label_visibility="visible",
     )
+    # The dropdown above is a small curated list for fast page load (see note
+    # above) — it won't contain every ticker. This lets you type any symbol
+    # directly (e.g. TNON) regardless of whether it's in that list.
+    _manual_ticker = st.text_input(
+        "Or type any ticker directly",
+        value="",
+        placeholder="e.g. TNON" if "🇺🇸" in market_label else "e.g. TNON.NS",
+        key=f"manual_ticker_{market_label}",
+    ).strip().upper()
+    if _manual_ticker:
+        raw = _manual_ticker
 
     st.markdown("---")
     st.markdown("#### ⚙️ Risk Settings")
