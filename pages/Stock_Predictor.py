@@ -664,9 +664,12 @@ else:
 
 
 @st.cache_data(ttl=300)
-@st.cache_data(ttl=300)
 def load_price_data(sym):
-    return _yf_history(sym, period="2y")
+    # First network call Tab 1 makes on every fresh session/ticker — hard
+    # timeout so a slow response can't hang the whole page before anything
+    # else even has a chance to render.
+    _df = _call_with_timeout(lambda: _yf_history(sym, period="2y"), timeout_s=12)
+    return _df if _df is not None else pd.DataFrame()
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -1238,8 +1241,16 @@ def detect_market_regime(market_key="US"):
     """
     try:
         idx_sym = "^NSEI" if market_key == "IN" else "^GSPC"
-        idx_df  = yf.Ticker(idx_sym).history(period="1y",  interval="1d")
-        vix_df  = yf.Ticker("^VIX").history(period="3mo", interval="1d")
+        # Cached 30min, but a cold cache (e.g. right after a fresh deploy
+        # wipes Streamlit's cache) still hits the network directly — hard
+        # timeout so a slow response can't hang every page load until the
+        # cache warms up.
+        idx_df = _call_with_timeout(
+            lambda: yf.Ticker(idx_sym).history(period="1y", interval="1d"), timeout_s=10)
+        vix_df = _call_with_timeout(
+            lambda: yf.Ticker("^VIX").history(period="3mo", interval="1d"), timeout_s=8)
+        idx_df = idx_df if idx_df is not None else pd.DataFrame()
+        vix_df = vix_df if vix_df is not None else pd.DataFrame()
 
         if idx_df.empty:
             raise ValueError("No index data")
@@ -5090,8 +5101,13 @@ with main_tab1:
             break
 
         # ── Stale-cache detection — auto-invalidate if price moved >3% ────────────
+        # This runs on EVERY rerun of the app (any widget interaction anywhere
+        # triggers a full script rerun), uncached by design — so it's a high
+        # -frequency exposure point. _yf_fast_price()'s own try/except only
+        # catches clean exceptions, not a genuine hang, which can otherwise
+        # freeze every single interaction, not just the initial page load.
         try:
-            live_price = _yf_fast_price(ticker)
+            live_price = _call_with_timeout(_yf_fast_price, (ticker,), timeout_s=5) or 0.0
             cached_price = f.get("price", 0)
             if cached_price > 0 and live_price > 0:
                 move_pct = (live_price - cached_price) / cached_price * 100
