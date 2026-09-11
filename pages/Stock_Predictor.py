@@ -4957,10 +4957,13 @@ def _ws_candles_to_df(candles: list) -> "pd.DataFrame | None":
     import pandas as _pdw
     rows = []
     for c in candles:
-        ts = _pdw.Timestamp(c["t"], unit="ms", tz="UTC")
         rows.append({"Open": c["o"], "High": c["h"], "Low": c["l"],
                      "Close": c["c"], "Volume": c["v"]})
-    idx = [_pdw.Timestamp(c["t"], unit="ms", tz="UTC") for c in candles]
+    # A plain list of Timestamps passed as index= does NOT become a
+    # DatetimeIndex — it's a generic Index without .tz, which crashed
+    # downstream code that assumes every candle df has a DatetimeIndex
+    # (e.g. "'Index' object has no attribute 'tz'"). Wrap explicitly.
+    idx = _pdw.DatetimeIndex([_pdw.Timestamp(c["t"], unit="ms", tz="UTC") for c in candles])
     return _pdw.DataFrame(rows, index=idx)
 
 def _ws_is_running() -> bool:
@@ -13270,6 +13273,17 @@ with main_tab4:
                     if _ws_clist:
                         _ws_df = _ws_candles_to_df(_ws_clist)
                         if _ws_df is not None and not _ws_df.empty:
+                            # _ws_candles_to_df always returns a UTC-tz index,
+                            # but _lm_df's index is in its own zone (e.g.
+                            # America/New_York for US intraday data). Concat-
+                            # enating DatetimeIndexes with DIFFERENT timezones
+                            # silently collapses the result into a plain
+                            # Index (no .tz), crashing every downstream use —
+                            # same root cause as the Finnhub synthetic-candle
+                            # path below. Align tz before merging.
+                            _lm_tz2 = _lm_df.index.tz if isinstance(_lm_df.index, _pd2.DatetimeIndex) else None
+                            _ws_df.index = (_ws_df.index.tz_localize(None) if _lm_tz2 is None
+                                            else _ws_df.index.tz_convert(_lm_tz2))
                             # Merge: keep yfinance history + replace recent bars with WebSocket
                             _cutoff = _ws_df.index[0]
                             _lm_df_hist = _lm_df[_lm_df.index < _cutoff]
@@ -13285,8 +13299,18 @@ with main_tab4:
                     _fh_h  = float(_fh_quote.get("h", _fh_c))
                     _fh_l  = float(_fh_quote.get("l", _fh_c))
                     _last_close = float(_lm_df["Close"].iloc[-1])
-                    _live_ts = _pd2.Timestamp.utcnow().tz_localize(None) if _lm_df.index.tz is None \
-                               else _pd2.Timestamp.utcnow()
+                    # ROOT CAUSE of "'Index' object has no attribute 'tz'":
+                    # yfinance's intraday index is tz-aware in its OWN zone
+                    # (e.g. America/New_York), not UTC. Timestamp.utcnow() is
+                    # UTC-aware — concatenating two DatetimeIndexes with
+                    # DIFFERENT timezones (not just aware-vs-naive) silently
+                    # collapses pandas' result into a generic Index, which
+                    # then has no .tz attribute and crashes every downstream
+                    # use. Must match _lm_df's exact tz via tz_convert, not
+                    # just check whether it's tz-aware at all.
+                    _lm_tz = _lm_df.index.tz if isinstance(_lm_df.index, _pd2.DatetimeIndex) else None
+                    _live_ts = _pd2.Timestamp.now(tz="UTC")
+                    _live_ts = _live_ts.tz_localize(None) if _lm_tz is None else _live_ts.tz_convert(_lm_tz)
                     _live_row = _pd2.DataFrame({
                         "Open":   [_last_close],
                         "High":   [max(_last_close, _fh_c, _fh_h)],
@@ -13493,7 +13517,17 @@ with main_tab4:
                     import pandas as _pd_id
                     # Today's OHLC from the data
                     _today_str = _pd_id.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
-                    _today_mask = _lm_df.index.normalize() == _pd_id.Timestamp(_today_str, tz=_lm_df.index.tz) if _lm_df.index.tz else _lm_df.index.date == _pd_id.Timestamp(_today_str).date()
+                    # Defensive: if the index isn't a proper DatetimeIndex (can
+                    # happen if any upstream source builds one incorrectly —
+                    # already fixed once at the source in _ws_candles_to_df),
+                    # skip the date-mask and fall through to the tail(60) fallback
+                    # below instead of crashing with "'Index' object has no attribute 'tz'".
+                    if not isinstance(_lm_df.index, _pd_id.DatetimeIndex):
+                        _today_mask = _pd_id.Series(False, index=_lm_df.index)
+                    elif _lm_df.index.tz:
+                        _today_mask = _lm_df.index.normalize() == _pd_id.Timestamp(_today_str, tz=_lm_df.index.tz)
+                    else:
+                        _today_mask = _lm_df.index.date == _pd_id.Timestamp(_today_str).date()
                     _today_df   = _lm_df[_today_mask] if _today_mask.any() else _lm_df.tail(60)
                     _day_open   = float(_today_df["Open"].iloc[0])  if not _today_df.empty else _cur_px
                     _day_high   = float(_today_df["High"].max())    if not _today_df.empty else _cur_px
